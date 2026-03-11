@@ -43,10 +43,10 @@ public:
     static double getStaticPressure(double altitude_m) noexcept;
 
     // Computes total temperature [K] from static temperature and Mach number
-    static double getTotalTemperature(double Ts, double Mach, double gamma) noexcept;
+    static double getTotalTemperature(double Ts, double MN, double gamma) noexcept;
 
     // Computes total pressure [Pa] from static pressure and Mach number
-    static double getTotalPressure(double Ps, double Mach, double gamma) noexcept;
+    static double getTotalPressure(double Ps, double MN, double gamma) noexcept;
 
     // Helper — converts altitude in feet to meters
     static double feetToMeters(double altitude_ft) noexcept;

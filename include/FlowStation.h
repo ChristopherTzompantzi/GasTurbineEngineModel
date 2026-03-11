@@ -41,7 +41,7 @@ struct FlowStation {
     double Pt    = 101325.0;  // Total pressure    [Pa]      — standard sea level pressure
     double Tt    = 288.15;    // Total temperature [K]       — standard sea level temperature (15 deg C)
     double W     = 0.0;       // Mass flow rate    [kg/s]
-    double Mach  = 0.0;       // Mach number       [-]
+    double MN    = 0.0;       // Mach number       [-]
     double FAR   = 0.0;       // Fuel-air ratio    [-]
     double gamma = 1.4;       // Ratio of specific heats [-] — perfect gas assumption for air (Phase 1)
     double Cp    = 1005.0;    // Specific heat at constant pressure [J/(kg·K)] — air at standard conditions

@@ -35,14 +35,14 @@
  *
  * UNITS:
  * altitude_m — meters [m]
- * Mach       — dimensionless [-]
+ * MN         — dimensionless [-]
  * recovery   — dimensionless [-], must be between 0.0 and 1.0
  */
 
 class Inlet : public Element {
 public:
     // Constructor — sets flight conditions and recovery factor
-    Inlet(double altitude_m, double Mach, double recovery_factor = 0.98) noexcept;
+    Inlet(double altitude_m, double MN, double recovery_factor = 0.98) noexcept;
 
     // Implements Element::compute() — performs inlet thermodynamics
     void compute() noexcept override;
@@ -50,7 +50,7 @@ public:
 private:
     // Members always initialized via constructor — no in-class defaults needed.
     double altitude_m;       // Flight altitude [m]
-    double Mach;             // Flight Mach number [-]
+    double MN;               // Flight Mach number [-]
     double recovery_factor;  // Inlet pressure recovery [-]
 };
 

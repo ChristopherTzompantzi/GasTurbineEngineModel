@@ -18,9 +18,9 @@
  * where W is an independent variable iterated by the solver.
  */
 
-Inlet::Inlet(double altitude_m, double Mach, double recovery_factor) noexcept
+Inlet::Inlet(double altitude_m, double MN, double recovery_factor) noexcept
     : altitude_m(altitude_m)
-    , Mach(Mach)
+    , MN(MN)
     , recovery_factor(recovery_factor)
 {
     // flowIn and flowOut are initialized to ISA sea level
@@ -36,8 +36,8 @@ void Inlet::compute() noexcept
     // Step 2 — Compute freestream total conditions
     // Uses perfect gas isentropic relations (Phase 1)
     double gamma = flowIn.gamma;
-    double Tt    = ISA::getTotalTemperature(Ts, Mach, gamma);
-    double Pt    = ISA::getTotalPressure(Ps, Mach, gamma);
+    double Tt    = ISA::getTotalTemperature(Ts, MN, gamma);
+    double Pt    = ISA::getTotalPressure(Ps, MN, gamma);
 
     // Step 3 — Apply pressure recovery factor
     // Pt_exit = Pt_freestream × recovery_factor
@@ -47,7 +47,7 @@ void Inlet::compute() noexcept
 
     // Step 4 — Pass remaining properties through unchanged
     flowOut.W     = flowIn.W;
-    flowOut.Mach  = Mach;
+    flowOut.MN    = MN;
     flowOut.FAR   = 0.0;      // No fuel added in inlet
     flowOut.gamma = flowIn.gamma;
     flowOut.Cp    = flowIn.Cp;

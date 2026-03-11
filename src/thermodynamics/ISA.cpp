@@ -65,22 +65,22 @@ double ISA::getStaticPressure(double altitude_m) noexcept
     }
 }
 
-double ISA::getTotalTemperature(double Ts, double Mach, double gamma) noexcept
+double ISA::getTotalTemperature(double Ts, double MN, double gamma) noexcept
 {
     // Isentropic relation — ram temperature rise
-    // Tt = Ts * (1 + (gamma-1)/2 * M²)
-    // Phase 2: add input validation (Mach >= 0, gamma > 1)
-    double tau = 1.0 + (gamma - 1.0) / 2.0 * Mach * Mach;
+    // Tt = Ts * (1 + (gamma-1)/2 * MN²)
+    // Phase 2: add input validation (MN >= 0, gamma > 1)
+    double tau = 1.0 + (gamma - 1.0) / 2.0 * MN * MN;
     return Ts * tau;
 }
 
-double ISA::getTotalPressure(double Ps, double Mach, double gamma) noexcept
+double ISA::getTotalPressure(double Ps, double MN, double gamma) noexcept
 {
     // Isentropic relation — ram pressure rise
-    // Pt = Ps * (1 + (gamma-1)/2 * M²)^(gamma/(gamma-1))
-    // Phase 2: add input validation (Mach >= 0, gamma > 1)
+    // Pt = Ps * (1 + (gamma-1)/2 * MN²)^(gamma/(gamma-1))
+    // Phase 2: add input validation (MN >= 0, gamma > 1)
     double exponent = gamma / (gamma - 1.0);
-    double base     = 1.0 + (gamma - 1.0) / 2.0 * Mach * Mach;
+    double base     = 1.0 + (gamma - 1.0) / 2.0 * MN * MN;
     return Ps * std::pow(base, exponent);
 }
 
