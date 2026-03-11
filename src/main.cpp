@@ -115,9 +115,14 @@ int main()
     // Second argument: Tt4 [K], third argument: FAR_in (unused in Tt4 mode)
     Combustor combustor(CombustorMode::Tt4, 1400.0, 0.0, 0.99, 0.04);
 
-    // Turbine — PR=3.5 (initial estimate), isentropic efficiency=0.89
-    // NOTE: PR_t will be iterated by solver in Phase 2
-    Turbine turbine(3.5, 0.89);
+    // Turbine — PR=2.286, isentropic efficiency=0.89
+    // PR_t calculated analytically from shaft power balance using exact FAR:
+    //   FAR_exact = Cp×(Tt4-Tt3) / (LHV×eff_b - Cp×Tt4) = 0.021462
+    //   (1 + FAR) × (Tt4 - Tt5) = (Tt3 - Tt2)
+    //   Tt5_required = 1400.0 - 267.89/1.021462 = 1137.74 K
+    //   PR_t = 1 / (1 - (1 - Tt5/Tt4)/eff_t)^(γ/(γ-1)) = 2.286
+    // The solver (Phase 2) will compute this automatically at runtime.
+    Turbine turbine(2.286, 0.89);
 
     // Nozzle — convergent, typical efficiency
     Nozzle nozzle(altitude_m, 0.98);
