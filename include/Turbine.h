@@ -53,6 +53,16 @@ public:
     // Implements Element::compute() — performs turbine thermodynamics
     void compute() noexcept override;
 
+    // Returns dHt × (1 + FAR) — turbine delivers power to shaft
+    // The (1 + FAR) factor accounts for the additional fuel mass added in the
+    // combustor — the turbine processes (1 + FAR) kg of gas per kg of core air.
+    // FAR is read from flowOut after compute() has been called.
+    // Sign convention matches Element base class: positive = power into shaft
+    double getWork() const noexcept override
+    {
+        return dHt * (1.0 + flowOut.FAR);
+    }
+
     // Specific work extracted [J/kg] — available after compute()
     // Used by solver for shaft power balance with compressor
     double dHt = 0.0;

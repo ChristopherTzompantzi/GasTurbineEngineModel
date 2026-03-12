@@ -62,6 +62,10 @@ public:
     // Implements Element::compute() — performs compressor thermodynamics
     void compute() noexcept override;
 
+    // Returns negative dHt — compressor consumes power from shaft
+    // Sign convention matches Element base class: negative = power out of shaft
+    double getWork() const noexcept override { return -dHt; }
+
     // Total enthalpy rise [J/kg] — available after compute()
     // dHt = Cp × (Tt_exit - Tt_inlet) — the specific work added to the flow.
     // Used by the solver for turbine work matching (turbine must supply at
