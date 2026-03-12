@@ -1,26 +1,32 @@
 cmake_minimum_required(VERSION 3.15)
 project(GasTurbineEngineModel VERSION 0.1.0 LANGUAGES CXX)
 
-# C++17 required — uses structured bindings, noexcept, and other C++17 features
+# C++17 required — range-based for, structured bindings, and guaranteed copy elision
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Header files location
-include_directories(include)
+set(CMAKE_CXX_EXTENSIONS OFF)   # Disable GNU extensions — enforce strict ISO C++
 
 # Source files — all engine element implementations
 set(SOURCES
     src/thermodynamics/ISA.cpp
     src/elements/Inlet.cpp
+    src/elements/Fan.cpp
+    src/elements/Splitter.cpp
     src/elements/Compressor.cpp
     src/elements/Combustor.cpp
     src/elements/Turbine.cpp
     src/elements/Nozzle.cpp
+    src/elements/FanNozzle.cpp
+    src/elements/Afterburner.cpp
+    src/mechanics/Shaft.cpp
     src/main.cpp
 )
 
 # Build target — produces the GasTurbineEngineModel executable
 add_executable(GasTurbineEngineModel ${SOURCES})
+
+# Target-scoped properties — must come after add_executable
+target_include_directories(GasTurbineEngineModel PRIVATE include)
 
 # Compiler warnings — catch common mistakes early
 target_compile_options(GasTurbineEngineModel PRIVATE
