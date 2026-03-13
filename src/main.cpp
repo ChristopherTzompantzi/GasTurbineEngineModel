@@ -13,12 +13,15 @@
 #include "Splitter.h"
 #include "FanNozzle.h"
 #include "Afterburner.h"
+#include "Solver.h"
 
 /*
  * main.cpp
  * --------
  * Entry point for the GasTurbineEngineModel simulation.
- * Assembles and runs a single-spool turbojet at cruise conditions.
+ * Assembles and runs engine cycle simulations:
+ *   Phase 1a — single-spool turbojet (design point, validated vs Mattingly)
+ *   Phase 1b — two-spool turbofan with afterburner (design point, solver-balanced)
  *
  * PHASE 1a — DESIGN POINT VALIDATION:
  * Parameters are hardcoded for validation against Mattingly
@@ -232,8 +235,8 @@ hpShaft.printBalance();
     //    PR_c      : 8.0                  — HP compressor pressure ratio
     //    eff_c     : 0.87                 — HP compressor efficiency
     //    Tt4       : 1700.0 K             — turbine inlet temperature
-    //    PR_t_hp   : TBD                  — solved analytically below
-    //    PR_t_lp   : TBD                  — solved analytically below
+    //    PR_t_hp   : solved by Newton-Raphson solver (initial guess: 2.4186)
+    //    PR_t_lp   : solved by Newton-Raphson solver (initial guess: 1.9663)
     //    eff_t     : 0.89                 — both turbine stages
     //    Tt7       : 2100.0 K             — afterburner exit temperature
     // ================================================================
@@ -262,14 +265,12 @@ hpShaft.printBalance();
     Compressor tf_compressor(8.0, 0.87);
     Combustor  tf_combustor(CombustorMode::Tt4, 1700.0, 0.0, 0.99, 0.04);
 
-    //   PR_t_hp = 2.4186 — analytically derived from HP shaft balance:
-    //   FAR_exact = 0.024094
-    //   Tt4.5_required = 1700.0 - 346.52/1.024094 = 1361.63 K
-    //   PR_t_hp = 1 / (1 - (1 - Tt4.5/Tt4)/eff_t)^(γ/(γ-1)) = 2.4186
-    Turbine    tf_turbine_hp(2.4186, 0.89);
-
-    // PR_t_lp = 1.9663 — LP balance: (1+BPR)×dHt_fan = (1+FAR)×dHt_lp
-    Turbine    tf_turbine_lp(1.9663, 0.89);
+    // Turbines constructed with initial guess PRs.
+    // The Newton-Raphson solver will find the converged values via setPR().
+    // Initial guesses are from the Phase 1b analytical derivation — they are
+    // close to the solution and will allow the solver to converge in few iterations.
+    Turbine    tf_turbine_hp(2.4186, 0.89);   // initial guess — solver will refine
+    Turbine    tf_turbine_lp(1.9663, 0.89);   // initial guess — solver will refine
 
     Afterburner tf_afterburner(2100.0);
     Nozzle      tf_nozzle(altitude_m, 0.98);
@@ -281,14 +282,114 @@ hpShaft.printBalance();
     tf_hpShaft.addElement(&tf_turbine_hp);
 
     Shaft tf_lpShaft("LP Shaft");
-    // NOTE: Fan is NOT added via getWork() — fan and LP turbine operate on
-    // different mass flow bases (total vs core). LP balance is verified
-    // manually below using physical power [W]. Phase 2 solver will handle
-    // this correctly by iterating in power units.
+    // NOTE: Fan is NOT added via getWork() — mixed mass flow bases.
+    // LP balance verified manually in physical power [W].
     tf_lpShaft.addElement(&tf_turbine_lp);
 
-    // --- Set inlet mass flow ---
-    tf_inlet.flowIn.W = 60.0;   // kg/s
+    // --- Target mass flow ---
+    constexpr double tf_W_target = 60.0;   // kg/s — solver will enforce this
+
+    // =========================================================================
+    // NEWTON-RAPHSON SOLVER — CYCLE EVALUATOR LAMBDA
+    // =========================================================================
+    // The lambda is the bridge between the solver and the engine elements.
+    // It receives x = [PR_t_hp, PR_t_lp, W] from the solver, runs the full
+    // turbofan cycle, and returns F = [F_hp, F_lp, F_W]:
+    //
+    //   F[0] = HP shaft balance error [J/kg]
+    //          = driver work (HP turbine) + driven work (HP compressor)
+    //          Target: 0.0
+    //
+    //   F[1] = LP shaft balance error [W]
+    //          = LP turbine power - fan power
+    //          Target: 0.0
+    //
+    //   F[2] = mass flow residual [kg/s]
+    //          = actual inlet W - target W
+    //          Target: 0.0
+    //
+    // The lambda captures all element objects by reference. This means it
+    // operates on the same objects that will be used for the final print pass,
+    // so after the solver converges the elements already hold the correct
+    // converged station data — no second solve needed.
+    // =========================================================================
+
+    auto cycleEvaluator = [&](const std::array<double,3>& x)
+        -> std::array<double,3>
+    {
+        // Unpack independent variables
+        const double PR_t_hp = x[0];
+        const double PR_t_lp = x[1];
+        const double W_in    = x[2];
+
+        // Inject independent variables into elements
+        tf_turbine_hp.setPR(PR_t_hp);
+        tf_turbine_lp.setPR(PR_t_lp);
+        tf_inlet.flowIn.W = W_in;
+
+        // Run full turbofan cycle (same sequence as print pass below)
+        tf_inlet.compute();
+
+        tf_fan.flowIn = tf_inlet.flowOut;
+        tf_fan.compute();
+
+        tf_splitter.flowIn = tf_fan.flowOut;
+        tf_splitter.compute();
+
+        tf_compressor.flowIn = tf_splitter.flowOut;
+        tf_compressor.compute();
+
+        tf_combustor.flowIn = tf_compressor.flowOut;
+        tf_combustor.compute();
+
+        tf_turbine_hp.flowIn = tf_combustor.flowOut;
+        tf_turbine_hp.compute();
+
+        tf_turbine_lp.flowIn = tf_turbine_hp.flowOut;
+        tf_turbine_lp.compute();
+
+        tf_afterburner.flowIn = tf_turbine_lp.flowOut;
+        tf_afterburner.compute();
+
+        tf_nozzle.flowIn = tf_afterburner.flowOut;
+        tf_nozzle.compute();
+
+        tf_fanNozzle.flowIn = tf_splitter.bypassOut;
+        tf_fanNozzle.compute();
+
+        // Compute shaft balances
+        tf_hpShaft.computeBalance();
+        tf_lpShaft.computeBalance();
+
+        // Evaluate residuals
+        // F[0] — HP shaft balance error [J/kg]
+        const double F_hp = tf_hpShaft.getBalanceError();
+
+        // F[1] — LP shaft balance error [W] (physical power basis)
+        const double tf_FAR_lambda = tf_combustor.flowOut.FAR;
+        const double F_lp = tf_turbine_lp.dHt * (1.0 + tf_FAR_lambda)
+                            * tf_splitter.flowOut.W
+                            - tf_fan.dHt * tf_inlet.flowIn.W;
+
+        // F[2] — mass flow residual [kg/s]
+        const double F_W = tf_inlet.flowIn.W - tf_W_target;
+
+        return { F_hp, F_lp, F_W };
+    };
+
+    // --- Construct and run solver ---
+    Solver tf_solver(cycleEvaluator);
+    const std::array<double,3> x0 = { tf_turbine_hp.PR_t,
+                                       tf_turbine_lp.PR_t,
+                                       tf_W_target };
+    const SolverResult tf_result = tf_solver.solve(x0);
+    Solver::printResult(tf_result);
+
+    // --- Final print pass — re-run cycle with converged solution ---
+    // The solver's last lambda call already set all element states to the
+    // converged values. This pass re-runs the cycle to ensure the print
+    // stations reflect the final converged x exactly.
+    tf_inlet.flowIn.W = tf_result.x[2];   // confirm converged W is set
 
     // --- Run turbofan cycle ---
 

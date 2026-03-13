@@ -53,6 +53,11 @@ public:
     // Implements Element::compute() — performs turbine thermodynamics
     void compute() noexcept override;
 
+    // setPR — updates the turbine pressure ratio before compute() is called.
+    // Used by the Newton-Raphson solver to inject new independent variable
+    // values into the cycle on each iteration without reconstructing the object.
+    void setPR(double PR_t_new) noexcept;
+
     // Returns dHt × (1 + FAR) — turbine delivers power to shaft
     // The (1 + FAR) factor accounts for the additional fuel mass added in the
     // combustor — the turbine processes (1 + FAR) kg of gas per kg of core air.
@@ -67,9 +72,11 @@ public:
     // Used by solver for shaft power balance with compressor
     double dHt = 0.0;
 
+    // Turbine pressure ratio [-] — readable after construction, updated by setPR()
+    double PR_t;
+
 private:
     // Members always initialized via constructor — no in-class defaults needed.
-    double PR_t;    // Turbine pressure ratio [-]
     double eff_t;   // Turbine isentropic efficiency [-]
 };
 
