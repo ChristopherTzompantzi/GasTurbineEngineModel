@@ -19,6 +19,7 @@ set(SOURCES
     src/elements/FanNozzle.cpp
     src/elements/Afterburner.cpp
     src/mechanics/Shaft.cpp
+    src/solver/Solver.cpp
     src/main.cpp
 )
 

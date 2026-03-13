@@ -58,3 +58,8 @@ void Turbine::compute() noexcept
     flowOut.gamma = flowIn.gamma;
     flowOut.Cp    = flowIn.Cp;
 }
+
+void Turbine::setPR(double PR_t_new) noexcept
+{
+    PR_t = PR_t_new;
+}
