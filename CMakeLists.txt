@@ -6,9 +6,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)   # Disable GNU extensions — enforce strict ISO C++
 
-# Source files — all engine element implementations
+# Source files — all engine component implementations
 set(SOURCES
     src/thermodynamics/ISA.cpp
+    src/thermodynamics/Thermo.cpp
     src/elements/Inlet.cpp
     src/elements/Fan.cpp
     src/elements/Splitter.cpp
@@ -35,3 +36,15 @@ target_compile_options(GasTurbineEngineModel PRIVATE
     -Wextra     # Enable extra warnings
     -Wpedantic  # Enforce strict ISO C++ compliance
 )
+
+# =============================================================================
+# Unit tests — each test is a standalone executable, no engine element deps
+# =============================================================================
+
+# test_thermo — validates NASA 7-coefficient polynomial functions
+add_executable(test_thermo
+    tests/test_thermo.cpp
+    src/thermodynamics/Thermo.cpp
+)
+target_include_directories(test_thermo PRIVATE include)
+target_compile_options(test_thermo PRIVATE -Wall -Wextra -Wpedantic)
