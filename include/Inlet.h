@@ -3,6 +3,7 @@
 
 #include "Element.h"
 #include "ISA.h"
+#include "Thermo.h"
 
 /*
  * Inlet.h
@@ -10,18 +11,22 @@
  * Declares the Inlet element — the first component in the engine cycle.
  * Inherits from Element and implements compute() with inlet thermodynamics.
  *
- * WHAT THE INLET DOES (Phase 1):
+ * WHAT THE INLET DOES:
  * 1. Takes flight conditions (altitude, Mach number)
  * 2. Uses ISA model to compute ambient static conditions
- * 3. Computes freestream total conditions via isentropic relations
- * 4. Applies pressure recovery factor to account for inlet losses
- * 5. Total temperature is unchanged (adiabatic process)
+ * 3. Evaluates real gas gamma at ambient static temperature via Thermo
+ * 4. Computes freestream total conditions via isentropic relations
+ * 5. Applies pressure recovery factor to account for inlet losses
+ * 6. Writes real gas Cp and gamma to flowOut for downstream elements
+ *    Total temperature is unchanged (adiabatic process)
  *
  * THERMODYNAMIC EQUATIONS:
- *   Ts  = ISA::getStaticTemperature(altitude)
- *   Ps  = ISA::getStaticPressure(altitude)
- *   Tt  = ISA::getTotalTemperature(Ts, Mach, gamma)
- *   Pt  = ISA::getTotalPressure(Ps, Mach, gamma) × recovery_factor
+ *   Ts    = ISA::getStaticTemperature(altitude)
+ *   Ps    = ISA::getStaticPressure(altitude)
+ *   gamma = Thermo::getGamma(Ts, 0.0)        — real gas, evaluated at Ts
+ *   Tt    = ISA::getTotalTemperature(Ts, Mach, gamma)
+ *   Pt    = ISA::getTotalPressure(Ps, Mach, gamma) × recovery_factor
+ *   Cp    = Thermo::getCp(Tt, 0.0)           — written to flowOut for downstream
  *
  * RECOVERY FACTOR:
  * Set via constructor in Phase 1 (constant value).

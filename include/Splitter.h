@@ -2,6 +2,7 @@
 #define SPLITTER_H
 
 #include "Element.h"
+#include "Thermo.h"
 
 /*
  * Splitter.h
@@ -14,6 +15,7 @@
  * 2. Divides mass flow into bypass and core streams by BPR
  * 3. Total pressure and temperature are identical in both streams
  *    — the splitter does no thermodynamic work
+ * 4. Writes real gas Cp and gamma to both flowOut and bypassOut via Thermo
  *
  * BYPASS RATIO (BPR):
  *   BPR = bypass mass flow / core mass flow
@@ -33,7 +35,7 @@
  *   Medium bypass (regional): 4.0 – 6.0  e.g. CFM56
  *   High bypass (widebody):   8.0 – 12.0 e.g. GE9X
  *
- * PHASE 2:
+ * FUTURE WORK:
  *   Splitter pressure loss — small total pressure drop at the bifurcation.
  *   Variable BPR for off-design analysis.
  */

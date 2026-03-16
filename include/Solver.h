@@ -1,253 +1,247 @@
-// =============================================================================
-// Solver.h
-// -----------------------------------------------------------------------------
-// Newton-Raphson solver for the GasTurbineEngineModel two-spool turbofan cycle.
-//
-// =============================================================================
-// NUMERICAL METHOD — NEWTON-RAPHSON
-// =============================================================================
-//
-// WHAT PROBLEM ARE WE SOLVING?
-// -----------------------------
-// A gas turbine cycle is a system of coupled nonlinear equations. At any
-// operating condition, several constraints must be satisfied simultaneously:
-//
-//   (1) HP shaft power balance  — HP turbine work = HP compressor work
-//   (2) LP shaft power balance  — LP turbine power = fan power
-//   (3) Mass flow consistency   — inlet mass flow propagates correctly
-//
-// Each constraint is expressed as a residual:
-//
-//   F_i(x) = 0
-//
-// where x is a vector of independent variables (unknowns) and F is a vector
-// of residuals (constraint violations). The goal of the solver is to find the
-// x that makes all F_i simultaneously zero.
-//
-// For our two-spool turbofan, the three unknowns and residuals are:
-//
-//   x[0] = PR_t_hp    →  F[0] = HP shaft balance error  [J/kg]
-//   x[1] = PR_t_lp    →  F[1] = LP shaft balance error  [W]
-//   x[2] = W          →  F[2] = mass flow residual       [kg/s]
-//                                (target W minus actual W at inlet)
-//
-// WHY NEWTON-RAPHSON?
-// -------------------
-// Newton-Raphson (NR) is selected because:
-//
-//   1. QUADRATIC CONVERGENCE — once near the solution, the number of correct
-//      digits roughly doubles each iteration. In practice, engine cycle balance
-//      converges in 4-8 iterations from a reasonable starting guess.
-//
-//   2. WELL-SUITED TO SMOOTH SYSTEMS — gas turbine thermodynamics are smooth
-//      and continuous (away from the choked/unchoked nozzle transition), which
-//      is exactly the regime where NR excels.
-//
-//   3. SMALL SYSTEM SIZE — with only 3 unknowns, the Jacobian is a 3x3 matrix.
-//      Solving a 3x3 linear system per iteration is computationally trivial.
-//
-//   4. INDUSTRY PRECEDENT — this is the same architecture used by NPSS
-//      (Numerical Propulsion System Simulation), the NASA/industry standard
-//      engine cycle tool that this project is inspired by.
-//
-// WHY NOT OTHER METHODS?
-// ----------------------
-//   Successive substitution — only linearly convergent, can fail to converge
-//     for stiff systems. Ruled out.
-//   Broyden's method — quasi-Newton, approximates the Jacobian rather than
-//     recomputing it. Useful when cycle evaluations are expensive. Overkill
-//     here since our cycle evaluates in microseconds.
-//   Gradient-free methods (Nelder-Mead, genetic algorithms) — global
-//     optimizers for design problems with many local minima. Far too slow
-//     for cycle balance. Ruled out.
-//
-// HOW THE METHOD WORKS
-// --------------------
-// The NR iteration for a system of equations is:
-//
-//   x_{n+1} = x_n - J^{-1} * F(x_n)
-//
-// where J is the Jacobian matrix of partial derivatives:
-//
-//   J_ij = dF_i / dx_j
-//
-// In practice, J is never inverted directly. Instead, the linear system:
-//
-//   J * delta_x = -F
-//
-// is solved for the update step delta_x, then applied:
-//
-//   x_{n+1} = x_n + delta_x
-//
-// This is numerically more stable than explicit inversion and avoids
-// accumulation of floating-point errors.
-//
-// JACOBIAN BY FINITE DIFFERENCES
-// --------------------------------
-// Analytical Jacobians require differentiating the entire engine cycle — every
-// isentropic relation, the combustor FAR equation, the nozzle thrust equation.
-// This is error-prone to derive and maintain as the code evolves.
-//
-// Instead, we use numerical finite differences. For each independent variable
-// x_j, we perturb it by a small amount h and re-run the full cycle:
-//
-//   J_ij ≈ ( F_i(x + h*e_j) - F_i(x) ) / h
-//
-// where e_j is the unit vector in the j-th direction. This requires N+1 cycle
-// evaluations per Newton step (1 baseline + N perturbations). For N=3:
-//   - 4 cycle evaluations per Newton step
-//   - ~5 Newton steps to converge
-//   - ~20 total cycle evaluations
-//   - Each cycle evaluation takes ~microseconds
-//   - Total solve time: milliseconds
-//
-// WHAT THIS MEANS FOR OUR CODE
-// ==============================
-// The solver is a standalone class in src/solver/Solver.cpp. It wraps the
-// engine cycle (the sequence of element compute() calls in main.cpp) inside
-// a lambda function called the "cycle evaluator". The solver treats the cycle
-// as a black box: given a vector of independent variables x, it runs the
-// cycle and returns the residual vector F.
-//
-// The engine element classes (Fan, Compressor, Combustor, Turbine, Nozzle,
-// etc.) are NOT modified. They remain exactly as implemented in Phase 1b.
-// The solver operates by:
-//
-//   Step 1 — Receive initial guess for x = [PR_t_hp, PR_t_lp, W]
-//   Step 2 — Evaluate F(x) by running the full engine cycle
-//   Step 3 — Check convergence: if ||F|| < tolerance, done
-//   Step 4 — Perturb each x_j by h, re-run cycle, compute column j of J
-//   Step 5 — Solve J * delta_x = -F using Gaussian elimination (3x3)
-//   Step 6 — Update x = x + delta_x, go to Step 2
-//
-// The cycle evaluator is passed into the solver as a std::function. This keeps
-// the solver generic — it has no knowledge of Fan, Compressor, Turbine, etc.
-// It only knows: "given x, evaluate F". This separation of concerns means the
-// solver can be reused for any engine configuration in Phase 2 and beyond.
-//
-// CONVERGENCE CRITERION
-// ----------------------
-// The solver converges when the L2 norm of the residual vector falls below
-// a specified absolute tolerance:
-//
-//   ||F|| = sqrt(F[0]^2 + F[1]^2 + F[2]^2) < tolerance
-//
-// Default tolerance is 1e-4 (dimensionless after normalisation — see Solver.cpp
-// for how residuals are normalised before the norm is computed).
-//
-// PERTURBATION STEP SIZE
-// -----------------------
-// The finite-difference step h must be:
-//   - Large enough that the perturbed residual differs meaningfully from the
-//     baseline (avoids cancellation error in floating-point subtraction)
-//   - Small enough that the linear approximation (Taylor expansion) is valid
-//
-// Default values:
-//   h_PR  = 1e-4  (relative perturbation on pressure ratio)
-//   h_W   = 1e-3  (absolute perturbation on mass flow [kg/s])
-//
-// SOURCE REFERENCES
-// -----------------
-// Numerical method:
-//   Press, W.H. et al., "Numerical Recipes in C++", 3rd ed., Cambridge, 2007.
-//   Chapter 9 — Root Finding and Nonlinear Sets of Equations.
-//
-// Engine cycle solver architecture:
-//   Lytle, J.K., "The Numerical Propulsion System Simulation: An Overview",
-//   NASA/TM-2000-209915, 2000.
-//
-// Finite-difference Jacobians for engine cycles:
-//   Mattingly, J.D., "Elements of Gas Turbine Propulsion",
-//   McGraw-Hill, 1996. Chapter 5.
-//
-// =============================================================================
-
 #ifndef SOLVER_H
 #define SOLVER_H
 
-#include <array>
 #include <functional>
-#include <string>
+#include <vector>
+#include <iostream>
+#include <iomanip>
+#include <cmath>
 
-// -----------------------------------------------------------------------------
-// SolverResult — returned by Solver::solve()
-// -----------------------------------------------------------------------------
-struct SolverResult
-{
-    bool   converged    = false;  // true if ||F|| < tolerance at exit
-    int    iterations   = 0;      // number of Newton steps taken
-    double residualNorm = 0.0;    // ||F|| at exit
-    std::array<double, 3> x = {0.0, 0.0, 0.0};  // final [PR_t_hp, PR_t_lp, W]
+/*
+ * Solver.h
+ * --------
+ * Declares the Newton-Raphson solver for engine cycle balancing.
+ * Solves a system of N nonlinear equations in N unknowns:
+ *
+ *   F(x) = 0
+ *
+ * where x is the vector of independent variables and F is the
+ * vector of residuals returned by the cycle evaluator.
+ *
+ * GENERALISED N×N DESIGN:
+ * The solver operates on std::vector<double> for both independent
+ * variables and residuals. N is determined at runtime from the
+ * size of the initial guess vector x0 passed to solve(). This
+ * allows the same solver infrastructure to handle any engine
+ * configuration:
+ *   - Turbojet      : N=1  (PR_t only)
+ *   - Two-spool TF  : N=3  (PR_t_hp, PR_t_lp, W)
+ *   - Three-spool   : N=4+ (future)
+ *
+ * RESIDUAL NORMALISATION (caller-provided scales):
+ * Each residual F[i] is divided by a caller-supplied scale factor
+ * scales[i] before computing the convergence norm. This prevents
+ * large-magnitude residuals (shaft power in Watts) from dominating
+ * over small-magnitude ones (mass flow in kg/s).
+ *
+ * The caller chooses scales based on the physical units of each
+ * residual. Typical values:
+ *   HP shaft balance [J/kg]   → scale = 1e5
+ *   LP shaft balance [W]      → scale = 1e6
+ *   Mass flow [kg/s]          → scale = 1.0
+ *   Single shaft [J/kg]       → scale = 1e5
+ *
+ * ALGORITHM:
+ * 1. Evaluate F(x) — residuals at current x
+ * 2. Check convergence: ||F_normalised||_2 < tol
+ * 3. Compute Jacobian J via forward finite differences
+ * 4. Build augmented matrix [J | -F]
+ * 5. Solve J·dx = -F via Gaussian elimination with partial pivoting
+ * 6. Apply physical guards: PR > 1.001, W > 1.0
+ * 7. Update x = x + dx
+ * 8. Repeat from step 1
+ *
+ * PHYSICAL GUARDS:
+ * After each Newton step, independent variables are clamped to
+ * prevent non-physical states during iteration:
+ *   PR values > 1.001  — pressure ratio must be expansive
+ *   W values  > 1.0    — mass flow must be positive and non-trivial
+ *
+ * The solver applies guards based on variable name conventions —
+ * the caller documents which indices are PR values and which are W.
+ * Guards are applied to all variables uniformly at the PR threshold
+ * unless the variable is identified as a mass flow by the scales vector.
+ *
+ * CONVERGENCE:
+ *   Tolerance : ||F_normalised||_2 < 1e-4
+ *   Max iter  : 50
+ *
+ * JACOBIAN PERTURBATION STEPS:
+ *   h_rel = 1e-4   — relative step for pressure ratio variables
+ *   h_abs = 1e-3   — absolute step for mass flow variables [kg/s]
+ *   Variables with scale >= 1e4 are treated as pressure ratios (h_rel)
+ *   Variables with scale <  1e4 are treated as mass flows (h_abs)
+ *
+ * UNITS — SI throughout:
+ *   Pressures    [Pa]
+ *   Temperatures [K]
+ *   Mass flow    [kg/s]
+ *   Shaft work   [J/kg] or [W]
+ *
+ * NPSS ALIGNMENT:
+ * This solver mirrors the Newton-Raphson solver used internally
+ * by NPSS for cycle balancing. Independent variables and residuals
+ * are defined by the cycle evaluator lambda in main.cpp — the
+ * solver itself has no knowledge of engine elements.
+ */
+
+// =========================================================================
+// RESULT STRUCT
+// =========================================================================
+
+/*
+ * SolverResult — returned by solve() after convergence or max iterations.
+ *
+ * x            : converged independent variable vector [size N]
+ * converged    : true if ||F_normalised||_2 < tol before max iterations
+ * iterations   : number of Newton steps taken
+ * residualNorm : final ||F_normalised||_2
+ * N            : number of independent variables — inferred from x.size()
+ */
+struct SolverResult {
+    std::vector<double> x;                  // Converged solution [size N]
+    bool                converged    = false;
+    int                 iterations   = 0;
+    double              residualNorm = 0.0;
 };
 
-// -----------------------------------------------------------------------------
-// Solver
-//
-// Newton-Raphson solver for the two-spool turbofan cycle.
-//
-// Usage:
-//   1. Construct with a cycle evaluator function and convergence parameters.
-//   2. Call solve() with an initial guess.
-//   3. Inspect the returned SolverResult.
-//
-// The cycle evaluator has the signature:
-//   std::array<double,3> evaluator(const std::array<double,3>& x)
-//
-// It receives x = [PR_t_hp, PR_t_lp, W] and returns F = [F_hp, F_lp, F_W].
-// The evaluator is responsible for running the full engine cycle and computing
-// the residuals. The solver has no knowledge of engine elements.
-// -----------------------------------------------------------------------------
-class Solver
-{
+// =========================================================================
+// SOLVER CLASS
+// =========================================================================
+
+class Solver {
 public:
-    // CycleEvaluator type alias — takes x, returns F
-    using CycleEvaluator = std::function<std::array<double,3>
-                                        (const std::array<double,3>&)>;
 
-    // Constructor
-    // evaluator    — cycle evaluator function (see above)
-    // maxIter      — maximum Newton iterations before declaring non-convergence
-    // tolerance    — convergence criterion on ||F|| (normalised)
-    // h_PR         — finite-difference step for pressure ratio unknowns
-    // h_W          — finite-difference step for mass flow unknown [kg/s]
-    explicit Solver(CycleEvaluator  evaluator,
-                    int             maxIter   = 50,
-                    double          tolerance = 1.0e-4,
-                    double          h_PR      = 1.0e-4,
-                    double          h_W       = 1.0e-3);
+    /*
+     * CycleEvaluator — callable that runs the engine cycle.
+     *
+     * Input:  x — independent variable vector [size N]
+     * Output: F — residual vector [size N]
+     *
+     * The evaluator is provided by main.cpp as a lambda that captures
+     * engine element objects by reference. The solver calls it on each
+     * Newton iteration and for each column of the finite-difference
+     * Jacobian. N is inferred from x0.size() at solve() time.
+     */
+    using CycleEvaluator = std::function<std::vector<double>(const std::vector<double>&)>;
 
-    // solve — runs the Newton-Raphson iteration from initial guess x0
-    // Returns a SolverResult describing convergence, iteration count, and
-    // the final solution vector.
-    SolverResult solve(const std::array<double,3>& x0) const;
+    /*
+     * Constructor
+     *
+     * @param evaluator  Cycle evaluator lambda — runs the engine cycle
+     *                   and returns residuals for given independent vars.
+     * @param scales     Residual scale factors [size N] — one per equation.
+     *                   F[i] is divided by scales[i] before norm evaluation.
+     *                   Caller provides based on physical units of residuals.
+     *                   Example (two-spool turbofan): {1e5, 1e6, 1.0}
+     *                   Example (turbojet):           {1e5}
+     * @param maxIter    Maximum Newton iterations (default: 50)
+     * @param tolerance  Convergence tolerance on normalised norm (default: 1e-4)
+     * @param h_rel      Relative finite-difference step for PR variables (default: 1e-4)
+     * @param h_abs      Absolute finite-difference step for W variables (default: 1e-3)
+     */
+    Solver(CycleEvaluator      evaluator,
+           std::vector<double> scales,
+           int                 maxIter   = 50,
+           double              tolerance = 1.0e-4,
+           double              h_rel     = 1.0e-4,
+           double              h_abs     = 1.0e-3);
 
-    // printResult — prints a formatted summary of a SolverResult to stdout
-    static void printResult(const SolverResult& result) noexcept;
+    /*
+     * solve — runs Newton-Raphson iteration until convergence or max iter.
+     *
+     * @param x0  Initial guess vector [size N]
+     * @return    SolverResult with converged x, convergence flag,
+     *            iteration count, and final residual norm.
+     *
+     * N is inferred from x0.size(). scales must match N.
+     * Physical guards applied after each step — see class comment.
+     */
+    SolverResult solve(const std::vector<double>& x0);
+
+    /*
+     * printResult — prints solver convergence summary to stdout.
+     *
+     * Prints converged/diverged status, iteration count, residual norm,
+     * and all N converged independent variable values generically as
+     * x[0], x[1], ... x[N-1]. Static — callable without a Solver instance.
+     *
+     * @param result  SolverResult returned by solve()
+     * @param labels  Optional variable labels [size N] for readable output.
+     *                If empty, variables are printed as x[0], x[1], etc.
+     */
+    static void printResult(const SolverResult&              result,
+                            const std::vector<std::string>&  labels = {}) noexcept;
 
 private:
-    // Members always initialized via constructor — no in-class defaults needed.
-    CycleEvaluator  m_evaluator;   // cycle evaluator black box
-    int             m_maxIter;     // maximum iterations
-    double          m_tolerance;   // convergence tolerance on ||F||
-    double          m_h_PR;        // finite-difference step for PR unknowns
-    double          m_h_W;         // finite-difference step for W unknown
 
-    // computeJacobian — approximates the 3x3 Jacobian by forward finite
-    // differences. Requires 3 additional cycle evaluations per call.
-    // J[i][j] = (F_i(x + h*e_j) - F_i(x)) / h
-    std::array<std::array<double,3>,3>
-    computeJacobian(const std::array<double,3>& x,
-                    const std::array<double,3>& F) const;
+    // =====================================================================
+    // PRIVATE MEMBERS
+    // =====================================================================
 
-    // solveLinearSystem — solves J * delta = -F by Gaussian elimination
-    // with partial pivoting. Returns the update vector delta_x.
-    // Returns a zero vector if J is singular (degenerate cycle state).
-    static std::array<double,3>
-    solveLinearSystem(std::array<std::array<double,3>,3> J,
-                      std::array<double,3> F) noexcept;
+    CycleEvaluator      evaluator_;   // Cycle evaluator lambda
+    std::vector<double> scales_;      // Residual normalisation factors [N]
+    int                 maxIter_;     // Maximum Newton iterations
+    double              tolerance_;   // Convergence tolerance on norm
+    double              h_rel_;       // Finite-difference step — PR variables
+    double              h_abs_;       // Finite-difference step — W variables
 
-    // norm — computes the L2 norm of a 3-vector
-    static double norm(const std::array<double,3>& v) noexcept;
+    // =====================================================================
+    // PRIVATE METHODS
+    // =====================================================================
+
+    /*
+     * computeJacobian — builds N×N finite-difference Jacobian matrix.
+     *
+     * For each independent variable x[j], perturbs by step h[j] and
+     * re-runs the full cycle. Column j of J is:
+     *
+     *   J[:,j] = (F(x + h[j]*e_j) - F0) / h[j]
+     *
+     * The step h[j] is chosen based on the residual scale:
+     *   scales[j] >= 1e4 → h = h_rel_ (pressure ratio variable)
+     *   scales[j] <  1e4 → h = h_abs_ (mass flow variable)
+     *
+     * The baseline F0 is passed in to avoid a redundant evaluation.
+     * This requires exactly N cycle evaluations for an N×N Jacobian.
+     *
+     * @param x   Current independent variable vector [size N]
+     * @param F0  Residuals at x [size N] — reused to avoid redundant call
+     * @return    J[N][N] — Jacobian matrix as vector of row vectors
+     */
+    std::vector<std::vector<double>>
+    computeJacobian(const std::vector<double>& x,
+                    const std::vector<double>& F0);
+
+    /*
+     * solveLinearSystem — solves J·dx = -F via Gaussian elimination
+     * with partial pivoting.
+     *
+     * Takes the N×N Jacobian J and residual vector F, forms the
+     * augmented matrix [J | -F], and applies forward elimination
+     * followed by back substitution.
+     *
+     * Singular pivot threshold: 1e-14. Returns zero vector if singular
+     * to prevent divide-by-zero — stalls convergence rather than crashing.
+     * A singular Jacobian indicates a degenerate cycle state, typically
+     * caused by a non-physical operating point or a very poor initial guess.
+     *
+     * @param J   N×N Jacobian matrix (passed by value — modified in place)
+     * @param F   Residual vector [size N]
+     * @return    Solution vector dx [size N]
+     */
+    std::vector<double>
+    solveLinearSystem(std::vector<std::vector<double>> J,
+                      const std::vector<double>&       F);
+
+    /*
+     * norm — computes L2 norm of a vector.
+     * Used for convergence check on normalised residuals.
+     *
+     * @param v   Input vector [size N]
+     * @return    ||v||_2 = sqrt(sum(v[i]^2))
+     */
+    double norm(const std::vector<double>& v) noexcept;
 };
 
 #endif // SOLVER_H

@@ -2,6 +2,7 @@
 #define FAN_H
 
 #include "Element.h"
+#include "Thermo.h"
 
 /*
  * Fan.h
@@ -16,11 +17,14 @@
  * 3. Raises total temperature accounting for isentropic efficiency
  * 4. Passes full mass flow to Splitter — BPR is handled there
  *
- * THERMODYNAMIC EQUATIONS (identical to Compressor — Perfect Gas Phase 1):
+ * THERMODYNAMIC EQUATIONS (identical to Compressor — real gas via Thermo):
  *   Pt_exit       = Pt_inlet × PR_f
+ *   gamma         = Thermo::getGamma(Tt_inlet, FAR)   — real gas at inlet conditions
  *   Tt_exit_ideal = Tt_inlet × PR_f^((γ-1)/γ)
  *   Tt_exit       = Tt_inlet + (Tt_exit_ideal - Tt_inlet) / eff_f
- *   dHt           = Cp × (Tt_exit - Tt_inlet)   [J/kg]
+ *   dHt           = Cp × (Tt_exit - Tt_inlet)         [J/kg]
+ *   Cp            = Thermo::getCp(Tt_exit, FAR)        — written to flowOut
+ *   gamma_exit    = Thermo::getGamma(Tt_exit, FAR)     — written to flowOut
  *
  * WHY FAN IS A SEPARATE CLASS FROM COMPRESSOR:
  * Architecturally the Fan sits on the LP shaft alongside the LP Turbine.
@@ -39,7 +43,7 @@
  *   PR_f  : 1.4 – 1.8   (vs 10+ for core compressor)
  *   eff_f : 0.88 – 0.92
  *
- * PHASE 2:
+ * FUTURE WORK (performance maps):
  *   Fan performance map — PR_f and eff_f as functions of corrected
  *   flow (Wc) and corrected speed (Nc).
  *   Fan diameter and tip speed constraints.

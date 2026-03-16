@@ -2,6 +2,7 @@
 #define COMBUSTOR_H
 
 #include "Element.h"
+#include "Thermo.h"
 
 /*
  * Combustor.h
@@ -10,11 +11,12 @@
  * raising total temperature and introducing FAR into the cycle.
  * Inherits from Element.
  *
- * WHAT THE COMBUSTOR DOES (Phase 1):
+ * WHAT THE COMBUSTOR DOES:
  * 1. Receives compressed air from Compressor exit
  * 2. Adds fuel — raises total temperature
  * 3. Applies fractional pressure loss (dPqP)
  * 4. Updates FAR to reflect added fuel mass
+ * 5. Writes real gas Cp and gamma to flowOut via Thermo at exit conditions
  *
  * TWO OPERATING MODES (selectable via constructor):
  *   Tt4 mode — user specifies turbine inlet temperature (Tt4)
@@ -25,16 +27,24 @@
  *              model computes resulting Tt_exit
  *              useful for off-design studies
  *
- * THERMODYNAMIC EQUATIONS (Perfect Gas — Phase 1):
+ * THERMODYNAMIC EQUATIONS (real gas via Thermo):
  *
  *   Pressure loss:
  *     Pt_exit = Pt_inlet × (1 - dPqP)
  *
  *   FAR mode — compute Tt_exit from FAR:
- *     Tt_exit = Tt_inlet + (FAR × LHV × eff_b) / ((1 + FAR) × Cp)
+ *     H_inlet  = Thermo::getH(Tt_inlet, FAR_inlet)
+ *     H_exit   = H_inlet + FAR × LHV × eff_b / (1 + FAR)
+ *     Tt_exit  = Thermo::getT(H_exit, FAR_exit)
  *
  *   Tt4 mode — compute FAR from Tt4:
- *     FAR = Cp × (Tt4 - Tt_inlet) / (LHV × eff_b - Cp × Tt4)
+ *     Solved iteratively via enthalpy balance:
+ *     H_exit(Tt4, FAR) = H_inlet + FAR × LHV × eff_b / (1 + FAR)
+ *     FAR is iterated until enthalpy balance is satisfied
+ *
+ *   Exit properties:
+ *     Cp    = Thermo::getCp   (Tt_exit, FAR_exit)   — written to flowOut
+ *     gamma = Thermo::getGamma(Tt_exit, FAR_exit)   — written to flowOut
  *
  * NAMING CONVENTION — NPSS:
  *   Tt4    — turbine inlet total temperature [K]
@@ -49,8 +59,7 @@
  *   Called "lower" because water produced by combustion
  *   is assumed to leave as vapor — always true in gas turbines.
  *
- * PHASE 2 CONSIDERATION:
- *   Variable Cp and gamma through combustor (real gas).
+ * FUTURE WORK:
  *   Species tracking for combustion products.
  *   NOx and emissions modeling.
  */
