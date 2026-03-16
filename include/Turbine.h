@@ -2,6 +2,7 @@
 #define TURBINE_H
 
 #include "Element.h"
+#include "Thermo.h"
 
 /*
  * Turbine.h
@@ -10,17 +11,22 @@
  * hot combustion gases, driving the compressor shaft.
  * Inherits from Element.
  *
- * WHAT THE TURBINE DOES (Phase 1):
+ * WHAT THE TURBINE DOES:
  * 1. Receives hot gas from Combustor exit
- * 2. Expands the gas — drops total pressure and temperature
- * 3. Extracts shaft work to drive the compressor
- * 4. Mass flow passes through unchanged
+ * 2. Evaluates real gas gamma and Cp at inlet conditions via Thermo
+ * 3. Expands the gas — drops total pressure and temperature
+ * 4. Extracts shaft work to drive the compressor
+ * 5. Writes real gas Cp and gamma to flowOut via Thermo at exit conditions
+ * 6. Mass flow passes through unchanged
  *
- * THERMODYNAMIC EQUATIONS (Perfect Gas — Phase 1):
+ * THERMODYNAMIC EQUATIONS (real gas via Thermo):
  *   Pt_exit       = Pt_inlet / PR_t
+ *   gamma         = Thermo::getGamma(Tt_inlet, FAR)   — real gas at inlet
  *   Tt_exit_ideal = Tt_inlet × (1/PR_t)^((γ-1)/γ)
  *   Tt_exit       = Tt_inlet - eff_t × (Tt_inlet - Tt_exit_ideal)
- *   dHt           = Cp × (Tt_inlet - Tt_exit)   [J/kg]
+ *   dHt           = Cp × (Tt_inlet - Tt_exit)         [J/kg]
+ *   Cp            = Thermo::getCp(Tt_exit, FAR)        — written to flowOut
+ *   gamma_exit    = Thermo::getGamma(Tt_exit, FAR)     — written to flowOut
  *
  * EFFICIENCY DIRECTION — WHY TURBINE MULTIPLIES, COMPRESSOR DIVIDES:
  * Compressor fights an adverse pressure gradient — losses mean MORE
@@ -39,7 +45,7 @@
  *   eff_t — turbine isentropic efficiency [-]
  *   dHt   — specific work extracted [J/kg]
  *
- * PHASE 2 CONSIDERATION:
+ * FUTURE WORK (performance maps):
  * PR_t and eff_t will be replaced by turbine map lookup.
  * Cooling flow modeling — HP turbine blade cooling air.
  * Polytropic efficiency as alternative input mode.

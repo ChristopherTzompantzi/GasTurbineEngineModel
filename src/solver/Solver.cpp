@@ -1,11 +1,11 @@
 // =============================================================================
 // Solver.cpp
 // -----------------------------------------------------------------------------
-// Newton-Raphson solver implementation for the GasTurbineEngineModel
-// two-spool turbofan cycle.
+// Newton-Raphson solver implementation for the GasTurbineEngineModel.
+// Generalised N×N system — handles any engine configuration at runtime.
 //
 // See Solver.h for the full description of the numerical method, design
-// rationale, Jacobian strategy, and source references.
+// rationale, Jacobian strategy, physical guards, and source references.
 // =============================================================================
 
 #include "Solver.h"
@@ -17,96 +17,103 @@
 
 // =============================================================================
 // Constructor
+//
+// Stores the cycle evaluator lambda, residual scale factors, and solver
+// tuning parameters. scales_ must have the same size N as the x0 vector
+// passed to solve() — N is not validated here but mismatches will produce
+// incorrect normalisation at runtime.
 // =============================================================================
 
-Solver::Solver(CycleEvaluator evaluator,
-               int            maxIter,
-               double         tolerance,
-               double         h_PR,
-               double         h_W)
-    : m_evaluator(std::move(evaluator))
-    , m_maxIter  (maxIter)
-    , m_tolerance(tolerance)
-    , m_h_PR     (h_PR)
-    , m_h_W      (h_W)
+Solver::Solver(CycleEvaluator      evaluator,
+               std::vector<double> scales,
+               int                 maxIter,
+               double              tolerance,
+               double              h_rel,
+               double              h_abs)
+    : evaluator_ (std::move(evaluator))
+    , scales_    (std::move(scales))
+    , maxIter_   (maxIter)
+    , tolerance_ (tolerance)
+    , h_rel_     (h_rel)
+    , h_abs_     (h_abs)
 {}
 
 // =============================================================================
 // solve
 //
 // Runs the Newton-Raphson iteration starting from x0.
+// N is inferred from x0.size() — scales_ must have been initialised to
+// the same N in the constructor.
 //
 // Algorithm per iteration:
-//   1. Evaluate residual vector F at current x
-//   2. Check convergence — if ||F|| < tolerance, return
-//   3. Compute Jacobian J by finite differences (3 perturbed cycle runs)
-//   4. Solve J * delta_x = -F by Gaussian elimination with partial pivoting
-//   5. Apply update: x = x + delta_x
-//   6. Repeat
+//   1. Evaluate residual vector F at current x  (1 cycle run)
+//   2. Normalise: F_norm[i] = F[i] / scales_[i]
+//   3. Check convergence: ||F_norm||_2 < tolerance_
+//   4. Compute N×N Jacobian J by forward finite differences  (N cycle runs)
+//   5. Solve J·dx = -F by Gaussian elimination with partial pivoting
+//   6. Apply physical guards and update x = x + dx
+//   7. Repeat
 //
-// Residual normalisation:
-//   Before computing ||F||, each residual is normalised so that all three
-//   are dimensionless and comparable in magnitude:
+// Total cycle evaluations per iteration: N+1
+//   (1 for residual + N for Jacobian columns)
 //
-//     F_norm[0] = F_hp  / F_hp_ref    where F_hp_ref  = 1.0e5  [J/kg]
-//     F_norm[1] = F_lp  / F_lp_ref    where F_lp_ref  = 1.0e6  [W]
-//     F_norm[2] = F_W   / F_W_ref     where F_W_ref   = 1.0    [kg/s]
-//
-//   These reference values reflect the typical magnitude of each residual
-//   at the start of iteration. They prevent the mass flow residual (small
-//   in absolute terms) from being swamped by the shaft work residuals
-//   (large in absolute terms) when computing the norm.
+// Physical guards (applied after each Newton step):
+//   scales_[i] >= 1e4  →  pressure ratio variable  →  clamped to > 1.001
+//   scales_[i] <  1e4  →  mass flow variable        →  clamped to > 1.0
 // =============================================================================
 
-SolverResult Solver::solve(const std::array<double,3>& x0) const
+SolverResult Solver::solve(const std::vector<double>& x0)
 {
-    // Reference scales for residual normalisation (see header comment)
-    constexpr double F_hp_ref = 1.0e5;   // J/kg — HP shaft work scale
-    constexpr double F_lp_ref = 1.0e6;   // W    — LP shaft power scale
-    constexpr double F_W_ref  = 1.0;     // kg/s — mass flow residual scale
+    const int N = static_cast<int>(x0.size());
 
     SolverResult result;
     result.x = x0;
 
-    for (int iter = 0; iter < m_maxIter; ++iter)
+    for (int iter = 0; iter < maxIter_; ++iter)
     {
-        // --- Step 1: Evaluate residuals at current x ---
-        const std::array<double,3> F = m_evaluator(result.x);
+        // Step 1 — Evaluate residuals at current x
+        const std::vector<double> F = evaluator_(result.x);
 
-        // --- Step 2: Check convergence on normalised residual norm ---
-        const std::array<double,3> F_norm = {
-            F[0] / F_hp_ref,
-            F[1] / F_lp_ref,
-            F[2] / F_W_ref
-        };
+        // Step 2 — Normalise residuals by caller-supplied scale factors
+        std::vector<double> F_norm(N);
+        for (int i = 0; i < N; ++i)
+            F_norm[i] = F[i] / scales_[i];
 
+        // Step 3 — Check convergence on normalised L2 norm
         result.residualNorm = norm(F_norm);
         result.iterations   = iter + 1;
 
-        if (result.residualNorm < m_tolerance)
+        if (result.residualNorm < tolerance_)
         {
             result.converged = true;
             return result;
         }
 
-        // --- Step 3: Compute Jacobian by finite differences ---
+        // Step 4 — Compute N×N Jacobian by forward finite differences
+        // Passes F as baseline to avoid a redundant cycle evaluation
         const auto J = computeJacobian(result.x, F);
 
-        // --- Step 4: Solve J * delta_x = -F ---
-        // Note: solveLinearSystem works on raw (un-normalised) F and J
-        // so that the update delta_x is in physical units (PR, kg/s).
-        const std::array<double,3> delta_x = solveLinearSystem(J, F);
+        // Step 5 — Solve J·dx = -F (raw, un-normalised)
+        // dx is in physical units — PR [-] or W [kg/s]
+        const std::vector<double> dx = solveLinearSystem(J, F);
 
-        // --- Step 5: Apply update ---
-        result.x[0] += delta_x[0];
-        result.x[1] += delta_x[1];
-        result.x[2] += delta_x[2];
+        // Step 6 — Apply update with physical guards
+        for (int i = 0; i < N; ++i)
+        {
+            result.x[i] += dx[i];
 
-        // Guard against non-physical values
-        // PR must remain > 1.0; W must remain positive
-        if (result.x[0] < 1.001) result.x[0] = 1.001;
-        if (result.x[1] < 1.001) result.x[1] = 1.001;
-        if (result.x[2] < 1.0)   result.x[2] = 1.0;
+            // Clamp to physical bounds based on variable type
+            // Pressure ratio: scales_[i] >= 1e4
+            // Mass flow:      scales_[i] <  1e4
+            if (scales_[i] >= 1.0e4)
+            {
+                if (result.x[i] < 1.001) result.x[i] = 1.001;
+            }
+            else
+            {
+                if (result.x[i] < 1.0) result.x[i] = 1.0;
+            }
+        }
     }
 
     // Maximum iterations reached without convergence
@@ -117,45 +124,45 @@ SolverResult Solver::solve(const std::array<double,3>& x0) const
 // =============================================================================
 // computeJacobian
 //
-// Approximates the 3x3 Jacobian matrix by forward finite differences.
+// Builds the N×N Jacobian matrix by forward finite differences.
 //
-// For each independent variable x_j, perturb by step h_j and re-run the
-// full engine cycle. The j-th column of J is then:
+// For each independent variable x[j], perturbs by step h[j] and re-runs
+// the full engine cycle. Column j of J:
 //
-//   J[:,j] = ( F(x + h_j * e_j) - F(x) ) / h_j
+//   J[:,j] = (F(x + h[j]*e_j) - F0) / h[j]
 //
-// This requires 3 additional cycle evaluations (one per unknown).
-// The baseline F(x) is passed in to avoid a redundant 4th evaluation.
+// Step selection per variable (based on residual scale):
+//   scales_[j] >= 1e4  →  h = h_rel_   (pressure ratio — absolute step on ~2.0 value)
+//   scales_[j] <  1e4  →  h = h_abs_   (mass flow — absolute step [kg/s])
 //
-// Perturbation steps:
-//   x[0] = PR_t_hp  →  h = m_h_PR  (relative — absolute on a ~2.4 value)
-//   x[1] = PR_t_lp  →  h = m_h_PR
-//   x[2] = W        →  h = m_h_W   (absolute [kg/s])
+// The baseline F0 is passed in from solve() to avoid a redundant evaluation.
+// This requires exactly N additional cycle evaluations per Newton step.
 // =============================================================================
 
-std::array<std::array<double,3>,3>
-Solver::computeJacobian(const std::array<double,3>& x,
-                         const std::array<double,3>& F) const
+std::vector<std::vector<double>>
+Solver::computeJacobian(const std::vector<double>& x,
+                         const std::vector<double>& F0)
 {
-    // Step sizes for each unknown
-    const std::array<double,3> h = { m_h_PR, m_h_PR, m_h_W };
+    const int N = static_cast<int>(x.size());
 
-    std::array<std::array<double,3>,3> J = {};
+    // Initialise N×N Jacobian to zero
+    std::vector<std::vector<double>> J(N, std::vector<double>(N, 0.0));
 
-    for (int j = 0; j < 3; ++j)
+    for (int j = 0; j < N; ++j)
     {
-        // Perturb x_j
-        std::array<double,3> x_pert = x;
-        x_pert[j] += h[j];
+        // Select perturbation step based on variable type
+        const double h = (scales_[j] >= 1.0e4) ? h_rel_ : h_abs_;
+
+        // Perturb x[j] forward
+        std::vector<double> x_pert = x;
+        x_pert[j] += h;
 
         // Evaluate perturbed residual
-        const std::array<double,3> F_pert = m_evaluator(x_pert);
+        const std::vector<double> F_pert = evaluator_(x_pert);
 
         // Forward finite difference — column j of J
-        for (int i = 0; i < 3; ++i)
-        {
-            J[i][j] = (F_pert[i] - F[i]) / h[j];
-        }
+        for (int i = 0; i < N; ++i)
+            J[i][j] = (F_pert[i] - F0[i]) / h;
     }
 
     return J;
@@ -164,42 +171,45 @@ Solver::computeJacobian(const std::array<double,3>& x,
 // =============================================================================
 // solveLinearSystem
 //
-// Solves the 3x3 linear system  J * delta = -F  using Gaussian elimination
+// Solves the N×N linear system J·dx = -F using Gaussian elimination
 // with partial pivoting (row pivoting for numerical stability).
 //
-// The system being solved is:
+// Forms the augmented matrix [J | -F] and applies:
+//   1. Forward elimination with partial pivoting
+//   2. Back substitution
 //
-//   [ J_00  J_01  J_02 ] [ delta_0 ]   [ -F_0 ]
-//   [ J_10  J_11  J_12 ] [ delta_1 ] = [ -F_1 ]
-//   [ J_20  J_21  J_22 ] [ delta_2 ]   [ -F_2 ]
+// Singular pivot threshold: 1e-14. Returns a zero vector if the system
+// is singular — stalls convergence rather than crashing. A singular
+// Jacobian typically indicates a non-physical engine operating state
+// or a very poor initial guess.
 //
-// Returns a zero update vector if J is singular (pivot < 1e-14), which
-// prevents a divide-by-zero crash at the cost of stalling convergence.
-// A singular Jacobian indicates a degenerate cycle state — typically caused
-// by a very poor initial guess or a non-physical operating condition.
+// @param J   N×N Jacobian (passed by value — modified during elimination)
+// @param F   Residual vector [size N]
+// @return    Solution vector dx [size N]
 // =============================================================================
 
-std::array<double,3>
-Solver::solveLinearSystem(std::array<std::array<double,3>,3> J,
-                           std::array<double,3>               F) noexcept
+std::vector<double>
+Solver::solveLinearSystem(std::vector<std::vector<double>> J,
+                           const std::vector<double>&       F)
 {
-    // Form augmented matrix [J | -F]
-    std::array<std::array<double,4>,3> aug;
-    for (int i = 0; i < 3; ++i)
+    const int N = static_cast<int>(F.size());
+
+    // Form augmented matrix [J | -F]  (N rows, N+1 columns)
+    std::vector<std::vector<double>> aug(N, std::vector<double>(N + 1, 0.0));
+    for (int i = 0; i < N; ++i)
     {
-        aug[i][0] = J[i][0];
-        aug[i][1] = J[i][1];
-        aug[i][2] = J[i][2];
-        aug[i][3] = -F[i];      // RHS = -F
+        for (int j = 0; j < N; ++j)
+            aug[i][j] = J[i][j];
+        aug[i][N] = -F[i];   // RHS = -F
     }
 
     // Forward elimination with partial pivoting
-    for (int col = 0; col < 3; ++col)
+    for (int col = 0; col < N; ++col)
     {
-        // Find pivot row — row with largest absolute value in this column
-        int pivotRow = col;
+        // Find pivot row — maximum absolute value in this column
+        int    pivotRow = col;
         double pivotVal = std::fabs(aug[col][col]);
-        for (int row = col + 1; row < 3; ++row)
+        for (int row = col + 1; row < N; ++row)
         {
             if (std::fabs(aug[row][col]) > pivotVal)
             {
@@ -208,73 +218,102 @@ Solver::solveLinearSystem(std::array<std::array<double,3>,3> J,
             }
         }
 
-        // Singular or near-singular — return zero update
+        // Singular or near-singular — return zero update vector
         if (pivotVal < 1.0e-14)
-        {
-            return {0.0, 0.0, 0.0};
-        }
+            return std::vector<double>(N, 0.0);
 
-        // Swap rows if needed
+        // Swap rows if pivot is not already on the diagonal
         if (pivotRow != col)
-        {
             std::swap(aug[col], aug[pivotRow]);
-        }
 
         // Eliminate below pivot
-        for (int row = col + 1; row < 3; ++row)
+        for (int row = col + 1; row < N; ++row)
         {
-            double factor = aug[row][col] / aug[col][col];
-            for (int k = col; k < 4; ++k)
-            {
+            const double factor = aug[row][col] / aug[col][col];
+            for (int k = col; k <= N; ++k)
                 aug[row][k] -= factor * aug[col][k];
-            }
         }
     }
 
     // Back substitution
-    std::array<double,3> delta = {};
-    for (int i = 2; i >= 0; --i)
+    std::vector<double> dx(N, 0.0);
+    for (int i = N - 1; i >= 0; --i)
     {
-        delta[i] = aug[i][3];
-        for (int j = i + 1; j < 3; ++j)
-        {
-            delta[i] -= aug[i][j] * delta[j];
-        }
-        delta[i] /= aug[i][i];
+        dx[i] = aug[i][N];
+        for (int j = i + 1; j < N; ++j)
+            dx[i] -= aug[i][j] * dx[j];
+        dx[i] /= aug[i][i];
     }
 
-    return delta;
+    return dx;
 }
 
 // =============================================================================
-// norm — L2 norm of a 3-vector
+// norm
+//
+// Computes the L2 norm of a vector: ||v||_2 = sqrt(sum(v[i]^2))
+// Used for convergence check on the normalised residual vector F_norm.
 // =============================================================================
 
-double Solver::norm(const std::array<double,3>& v) noexcept
+double Solver::norm(const std::vector<double>& v) noexcept
 {
-    return std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    double sum = 0.0;
+    for (const double val : v)
+        sum += val * val;
+    return std::sqrt(sum);
 }
 
 // =============================================================================
 // printResult
 //
-// Prints a formatted summary of a SolverResult to stdout.
-// Useful for debugging and for displaying solver performance in main.cpp.
+// Prints a formatted solver convergence summary to stdout.
+//
+// Outputs convergence status, iteration count, residual norm, and all N
+// converged independent variable values. If labels are provided they are
+// used as variable names — otherwise variables print as x[0], x[1], etc.
+//
+// Example output (turbojet, N=1, labels={"PR_t"}):
+//   --- Newton-Raphson Solver Result ---
+//     Converged      : YES
+//     Iterations     : 3
+//     Residual norm  : 0.000042
+//     PR_t           : 2.312456
+//
+// Example output (turbofan, N=3, labels={"PR_t_hp","PR_t_lp","W"}):
+//   --- Newton-Raphson Solver Result ---
+//     Converged      : YES
+//     Iterations     : 3
+//     Residual norm  : 0.000016
+//     PR_t_hp        : 2.362703
+//     PR_t_lp        : 1.879607
+//     W              : 60.000000
 // =============================================================================
 
-void Solver::printResult(const SolverResult& result) noexcept
+void Solver::printResult(const SolverResult&             result,
+                          const std::vector<std::string>& labels) noexcept
 {
+    const int N = static_cast<int>(result.x.size());
+
     std::cout << std::fixed;
     std::cout << "--- Newton-Raphson Solver Result ---\n";
-    std::cout << "  Converged      : " << (result.converged ? "YES" : "NO") << "\n";
+    std::cout << "  Converged      : "
+              << (result.converged ? "YES" : "NO") << "\n";
     std::cout << "  Iterations     : " << result.iterations << "\n";
     std::cout << "  Residual norm  : "
               << std::setprecision(6) << result.residualNorm << "\n";
-    std::cout << "  PR_t_hp        : "
-              << std::setprecision(6) << result.x[0] << "\n";
-    std::cout << "  PR_t_lp        : "
-              << std::setprecision(6) << result.x[1] << "\n";
-    std::cout << "  W              : "
-              << std::setprecision(4) << result.x[2] << " kg/s\n";
+
+    for (int i = 0; i < N; ++i)
+    {
+        // Use provided label if available, otherwise generic x[i]
+        std::string label = (i < static_cast<int>(labels.size()))
+                          ? labels[i]
+                          : ("x[" + std::to_string(i) + "]");
+
+        // Pad label to 14 characters for column alignment
+        while (static_cast<int>(label.size()) < 14) label += " ";
+
+        std::cout << "  " << label << " : "
+                  << std::setprecision(6) << result.x[i] << "\n";
+    }
     std::cout << "\n";
 }

@@ -3,6 +3,7 @@
 
 #include "Element.h"
 #include "ISA.h"
+#include "Thermo.h"
 
 /*
  * FanNozzle.h
@@ -14,12 +15,21 @@
  *
  * WHAT THE FAN NOZZLE DOES:
  * 1. Receives bypass stream from Splitter (bypassOut)
- * 2. Computes nozzle pressure ratio (NPR) vs ambient
- * 3. Determines choked or unchoked condition
- * 4. Computes ideal jet velocity via isentropic expansion
- * 5. Applies Cfg to get actual jet velocity
- * 6. Computes throat area from flow function
- * 7. Computes cold gross thrust Fg_cold
+ * 2. Evaluates real gas gamma and Cp at inlet conditions via Thermo
+ * 3. Computes nozzle pressure ratio (NPR) vs ambient
+ * 4. Determines choked or unchoked condition
+ * 5. Computes ideal jet velocity via isentropic expansion
+ * 6. Applies Cfg to get actual jet velocity
+ * 7. Computes throat area from flow function
+ * 8. Computes cold gross thrust Fg_cold
+ * 9. Writes real gas Cp and gamma to flowOut via Thermo
+ *
+ * THERMODYNAMIC EQUATIONS (real gas via Thermo):
+ *   NPR      = Pt_inlet / Ps_ambient
+ *   gamma    = Thermo::getGamma(Tt_inlet, FAR)   — real gas at inlet
+ *   Cp       = Thermo::getCp(Tt_inlet, FAR)       — real gas at inlet
+ *   Vjet     = Cfg × sqrt(2 × Cp × Tt_inlet × (1 - (Ps_exit/Pt_inlet)^((γ-1)/γ)))
+ *   Fg_cold  = W_bypass × Vjet + (Ps_exit - Ps_ambient) × Ath
  *
  * DIFFERENCE FROM CORE NOZZLE:
  * Processes bypass stream mass flow only — W_bypass from Splitter.
@@ -38,7 +48,7 @@
  *   Ath     — throat area [m²]
  *   Cfg     — nozzle velocity coefficient [-]
  *
- * PHASE 2:
+ * FUTURE WORK:
  *   Variable area fan nozzle for off-design operation.
  *   Cfg vs NPR map for more accurate thrust prediction.
  *   Mixer option — bypass and core streams mixed before expansion.

@@ -20,12 +20,18 @@
  * Output conversion to engineering units (bar, degC, lbf) happens
  * only at the results/output layer — never inside physics calculations.
  *
- * PERFECT GAS ASSUMPTION (Phase 1):
- * gamma and Cp are treated as constants in Phase 1 (perfect gas).
- * This simplifies the thermodynamic calculations and allows
- * validation against known analytical solutions (e.g. Mattingly).
- * In Phase 2 these will become functions of temperature and FAR
- * using NASA 7-coefficient polynomials for real gas behavior.
+ * REAL GAS PROPERTIES (Phase 2):
+ * gamma and Cp are no longer hardcoded constants. Each element is
+ * responsible for writing the correct values to its flowOut station
+ * after computing the new Tt and FAR, using:
+ *
+ *   flowOut.Cp    = Thermo::getCp(flowOut.Tt, flowOut.FAR);
+ *   flowOut.gamma = Thermo::getGamma(flowOut.Tt, flowOut.FAR);
+ *
+ * This makes the data flow explicit — each element owns its output
+ * station properties, consistent with the NPSS element-based pattern.
+ * gamma and Cp carried on a FlowStation always reflect the actual
+ * thermodynamic state at that station, not a global constant.
  *
  * DEFAULT VALUES:
  * The constructor initializes all variables to ISA (International
@@ -33,18 +39,28 @@
  * uninitialized memory — a common source of silent bugs in C++
  * physics simulations where garbage values produce plausible
  * but incorrect results.
+ *
+ * gamma and Cp are initialised to 0.0. Any element that reads these
+ * values without first computing them via Thermo will produce an
+ * obviously wrong result — a deliberate fail-loud sentinel rather
+ * than a silent wrong answer from a stale hardcoded constant.
  */
 
 struct FlowStation {
     // Thermodynamic state variables
     // Default values = ISA (International Standard Atmosphere) sea level conditions
     double Pt    = 101325.0;  // Total pressure    [Pa]      — standard sea level pressure
-    double Tt    = 288.15;    // Total temperature [K]       — standard sea level temperature (15 deg C)
+    double Tt    = 288.15;    // Total temperature [K]       — standard sea level temperature (15 degC)
     double W     = 0.0;       // Mass flow rate    [kg/s]
     double MN    = 0.0;       // Mach number       [-]
     double FAR   = 0.0;       // Fuel-air ratio    [-]
-    double gamma = 1.4;       // Ratio of specific heats [-] — perfect gas assumption for air (Phase 1)
-    double Cp    = 1005.0;    // Specific heat at constant pressure [J/(kg·K)] — air at standard conditions
+
+    // Real gas properties — set by each element via Thermo::getCp / Thermo::getGamma
+    // after computing the new Tt and FAR. Initialised to 0.0 as a fail-loud sentinel:
+    // any element that reads these without computing them first will produce an
+    // obviously wrong result rather than a silent wrong answer.
+    double Cp    = 0.0;       // Specific heat at constant pressure [J/kg·K]
+    double gamma = 0.0;       // Ratio of specific heats            [-]
 
     // Constructor — all defaults are set above (in-class initializers).
     // noexcept: tells the compiler this constructor can never throw an exception,

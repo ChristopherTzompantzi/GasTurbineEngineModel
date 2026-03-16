@@ -3,6 +3,7 @@
 
 #include "Element.h"
 #include "ISA.h"
+#include "Thermo.h"
 
 /*
  * Nozzle.h
@@ -11,20 +12,23 @@
  * into jet velocity and thrust, completing the Brayton cycle.
  * Inherits from Element.
  *
- * WHAT THE NOZZLE DOES (Phase 1):
+ * WHAT THE NOZZLE DOES:
  * 1. Receives expanded gas from Turbine exit
- * 2. Determines choked or unchoked condition from NPR
- * 3. Expands gas to ambient (or critical) pressure
- * 4. Computes jet velocity using isentropic relations
- * 5. Computes gross thrust Fg
+ * 2. Evaluates real gas gamma and Cp at inlet conditions via Thermo
+ * 3. Determines choked or unchoked condition from NPR
+ * 4. Expands gas to ambient (or critical) pressure
+ * 5. Computes jet velocity using isentropic relations
+ * 6. Computes gross thrust Fg
  *
  * CHOKED vs UNCHOKED:
  *   NPR_crit = ((γ+1)/2)^(γ/(γ-1)) ≈ 1.893 for γ=1.4
  *   NPR < NPR_crit → unchoked → Ps_exit = Ps_ambient
  *   NPR ≥ NPR_crit → choked  → Ps_exit = Pt_inlet / NPR_crit
  *
- * THERMODYNAMIC EQUATIONS (Perfect Gas — Phase 1):
+ * THERMODYNAMIC EQUATIONS (real gas via Thermo):
  *   NPR      = Pt_inlet / Ps_ambient
+ *   gamma    = Thermo::getGamma(Tt_inlet, FAR)   — real gas at inlet
+ *   Cp       = Thermo::getCp(Tt_inlet, FAR)       — real gas at inlet
  *   Vjet     = Cfg × sqrt(2 × Cp × Tt_inlet × (1 - (Ps_exit/Pt_inlet)^((γ-1)/γ)))
  *   Fg       = W × Vjet + (Ps_exit - Ps_ambient) × Ath
  *
@@ -35,7 +39,7 @@
  *   FF  = sqrt(γ/R) × MN × (1 + (γ-1)/2 × MN²)^(-(γ+1)/(2×(γ-1)))
  *   Ath = W × sqrt(Tt_inlet) / (Pt_inlet × FF)
  *
- * PHASE 2 CONSIDERATION — Ath AS CONSTRUCTOR PARAMETER:
+ * FUTURE WORK — Ath AS CONSTRUCTOR PARAMETER:
  *   For convergent-divergent nozzles and detailed thrust accounting,
  *   Ath should be accepted as a fixed geometric input.
  *   This allows modeling of over/under-expanded nozzles and
@@ -50,7 +54,7 @@
  *   Ath     — nozzle throat area [m²]
  *   FF      — flow function [-]
  *
- * PHASE 2 CONSIDERATION:
+ * FUTURE WORK:
  *   Convergent-divergent nozzle modeling.
  *   Fixed Ath as geometric input for detailed thrust accounting.
  *   Nozzle performance map (Cfg vs NPR).
