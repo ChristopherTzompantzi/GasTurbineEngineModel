@@ -10,6 +10,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)   # Disable GNU extensions — enforce strict ISO 
 set(SOURCES
     src/thermodynamics/ISA.cpp
     src/thermodynamics/Thermo.cpp
+    src/maps/MapReader.cpp
+    src/maps/CompressorMap.cpp
+    src/maps/TurbineMap.cpp
+    src/maps/NozzleMap.cpp
+    src/maps/InletMap.cpp
     src/elements/Inlet.cpp
     src/elements/Fan.cpp
     src/elements/Splitter.cpp
@@ -36,15 +41,49 @@ target_compile_options(GasTurbineEngineModel PRIVATE
     -Wextra     # Enable extra warnings
     -Wpedantic  # Enforce strict ISO C++ compliance
 )
-
 # =============================================================================
-# Unit tests — each test is a standalone executable, no engine element deps
+# Unit tests
 # =============================================================================
 
-# test_thermo — validates NASA 7-coefficient polynomial functions
+# test_thermo — validates NASA 7-coefficient polynomial functions in isolation
 add_executable(test_thermo
     tests/test_thermo.cpp
     src/thermodynamics/Thermo.cpp
 )
 target_include_directories(test_thermo PRIVATE include)
-target_compile_options(test_thermo PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(test_thermo PRIVATE
+    -Wall       # Enable all standard warnings
+    -Wextra     # Enable extra warnings
+    -Wpedantic  # Enforce strict ISO C++ compliance
+)
+
+# test_maps — validates all map classes against synthetic map files
+add_executable(test_maps
+    tests/test_maps.cpp
+    src/maps/MapReader.cpp
+    src/maps/CompressorMap.cpp
+    src/maps/TurbineMap.cpp
+    src/maps/NozzleMap.cpp
+    src/maps/InletMap.cpp
+    src/thermodynamics/Thermo.cpp
+)
+target_include_directories(test_maps PRIVATE include)
+target_compile_options(test_maps PRIVATE
+    -Wall       # Enable all standard warnings
+    -Wextra     # Enable extra warnings
+    -Wpedantic  # Enforce strict ISO C++ compliance
+)
+
+# =============================================================================
+# Tools
+# =============================================================================
+
+# generate_maps — generates synthetic performance map files
+add_executable(generate_maps
+    tools/generate_maps.cpp
+)
+target_compile_options(generate_maps PRIVATE
+    -Wall       # Enable all standard warnings
+    -Wextra     # Enable extra warnings
+    -Wpedantic  # Enforce strict ISO C++ compliance
+)
