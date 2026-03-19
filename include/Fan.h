@@ -2,7 +2,8 @@
 #define FAN_H
 
 #include "Element.h"
-#include "Thermo.h"
+#include "CompressorMap.h"
+#include <optional>
 
 /*
  * Fan.h
@@ -13,63 +14,94 @@
  *
  * WHAT THE FAN DOES:
  * 1. Receives total inlet mass flow from Inlet
- * 2. Raises total pressure by fan pressure ratio (PR_f)
- * 3. Raises total temperature accounting for isentropic efficiency
- * 4. Passes full mass flow to Splitter — BPR is handled there
+ * 2. Computes corrected mass flow Wc from inlet conditions
+ * 3. Looks up PR and eff from CompressorMap at (Wc, Nc%) if map loaded
+ *    Otherwise uses fixed PR_f_ and eff_f_ from constructor as fallback
+ * 4. Raises total pressure by fan pressure ratio
+ * 5. Raises total temperature accounting for isentropic efficiency
+ * 6. Passes full mass flow to Splitter — BPR is handled there
  *
- * THERMODYNAMIC EQUATIONS (identical to Compressor — real gas via Thermo):
+ * THERMODYNAMIC EQUATIONS (real gas via Thermo):
+ *   Wc            = W * sqrt(Tt_in / T_ref) / (Pt_in / P_ref)
  *   Pt_exit       = Pt_inlet × PR_f
- *   gamma         = Thermo::getGamma(Tt_inlet, FAR)   — real gas at inlet conditions
+ *   gamma         = Thermo::getGamma(Tt_inlet, FAR)
  *   Tt_exit_ideal = Tt_inlet × PR_f^((γ-1)/γ)
  *   Tt_exit       = Tt_inlet + (Tt_exit_ideal - Tt_inlet) / eff_f
- *   dHt           = Cp × (Tt_exit - Tt_inlet)         [J/kg]
- *   Cp            = Thermo::getCp(Tt_exit, FAR)        — written to flowOut
- *   gamma_exit    = Thermo::getGamma(Tt_exit, FAR)     — written to flowOut
+ *   dHt           = Cp × (Tt_exit - Tt_inlet)   [J/kg]
  *
- * WHY FAN IS A SEPARATE CLASS FROM COMPRESSOR:
- * Architecturally the Fan sits on the LP shaft alongside the LP Turbine.
- * The Compressor sits on the HP shaft alongside the HP Turbine.
- * Keeping them as separate classes makes the shaft connections explicit
- * and readable in main.cpp, and matches NPSS element conventions.
+ * MAP LOOKUP (Phase 3):
+ *   Nc% = 100.0 — design speed line used throughout Phase 3.
+ *   Phase 4 will replace 100.0 with computed LP shaft corrected speed.
  *
- * SHAFT CONNECTION:
- *   LP Shaft: Fan ←→ LP Turbine
- *   HP Shaft: Compressor ←→ HP Turbine
+ * NPSS ALIGNMENT:
+ *   loadMap() mirrors NPSS S_map subelement pattern.
+ *   Fan does not use VSV — IGV support deferred to Phase 5.
  *
- * SIGN CONVENTION:
- *   getWork() returns -dHt — fan consumes power from LP shaft
+ * WHY FAN IS SEPARATE FROM COMPRESSOR:
+ *   Fan sits on LP shaft alongside LP Turbine.
+ *   Compressor sits on HP shaft alongside HP Turbine.
+ *   Separate classes make shaft connections explicit in main.cpp.
  *
- * TYPICAL VALUES:
- *   PR_f  : 1.4 – 1.8   (vs 10+ for core compressor)
- *   eff_f : 0.88 – 0.92
- *
- * FUTURE WORK (performance maps):
- *   Fan performance map — PR_f and eff_f as functions of corrected
- *   flow (Wc) and corrected speed (Nc).
+ * FUTURE WORK (Phase 4):
+ *   Replace Nc%=100.0 with computed LP shaft corrected speed.
+ *   IGV schedule support.
  *   Fan diameter and tip speed constraints.
+ *
+ * UNITS:
+ *   PR_f  [-]
+ *   eff_f [-]
+ *   dHt   [J/kg]
+ *   Wc    [kg/s corrected]
+ *   Nc    [% of design corrected speed]
  */
 
-class Fan : public Element
-{
+class Fan : public Element {
 public:
-    // Constructor — fan pressure ratio and isentropic efficiency
+
+    /*
+     * Constructor — sets fallback fan pressure ratio and isentropic efficiency.
+     * Call loadMap() after construction to enable map-based PR and eff.
+     *
+     * @param PR_f   Fallback fan pressure ratio [-]
+     * @param eff_f  Fallback isentropic efficiency [-]
+     */
     Fan(double PR_f, double eff_f) noexcept;
 
-    // Implements Element::compute() — performs fan thermodynamics
+    /*
+     * loadMap — loads a CompressorMap from file.
+     * Mirrors NPSS S_map subelement pattern.
+     * Once loaded, compute() uses map lookup for PR_f and eff_f.
+     * If load fails, falls back to fixed PR_f_ and eff_f_ with a warning.
+     *
+     * @param filepath  Path to the .map file (TYPE must be COMPRESSOR)
+     */
+    void loadMap(const std::string& filepath);
+
+    /*
+     * compute — performs fan thermodynamics.
+     * Implements Element::compute().
+     */
     void compute() noexcept override;
 
-    // Returns negative dHt — fan consumes power from LP shaft
-    // Sign convention matches Element base class: negative = power out of shaft
+    /*
+     * getWork — returns negative dHt [J/kg].
+     * Sign convention: negative = power consumed from LP shaft.
+     */
     double getWork() const noexcept override { return -dHt; }
 
-    // Specific work input [J/kg] — available after compute()
+    // Total enthalpy rise [J/kg] — available after compute()
     // dHt = Cp × (Tt_exit - Tt_inlet)
     double dHt = 0.0;
 
 private:
-    // Members always initialized via constructor — no in-class defaults needed.
-    double PR_f;    // Fan pressure ratio [-]
-    double eff_f;   // Fan isentropic efficiency [-]
+
+    // =========================================================================
+    // PRIVATE MEMBERS
+    // =========================================================================
+
+    double                       PR_f_;   // Fallback fan pressure ratio [-]
+    double                       eff_f_;  // Fallback isentropic efficiency [-]
+    std::optional<CompressorMap> map_;    // CompressorMap subelement — present only if loadMap() called
 };
 
 #endif // FAN_H

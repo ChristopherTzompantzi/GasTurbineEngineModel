@@ -1,6 +1,7 @@
 #include "Nozzle.h"
 #include "Thermo.h"
 #include <cmath>
+#include <iostream>
 
 /*
  * Nozzle.cpp
@@ -8,21 +9,56 @@
  * Implements the Nozzle element thermodynamics.
  *
  * COMPUTE SEQUENCE:
- * 1. Read inlet conditions from flowIn (Pt, Tt, W)
- * 2. Evaluate real gas gamma and Cp at inlet conditions via Thermo
- * 3. Get ambient conditions from ISA model
- * 4. Compute NPR and determine choked/unchoked condition
- * 5. Compute ideal jet velocity (isentropic expansion)
- * 6. Apply Cfg to get actual jet velocity
- * 7. Calculate throat area from flow function
- * 8. Compute gross thrust Fg
- * 9. Write real gas Cp and gamma to flowOut via Thermo
+ * 1. Read inlet conditions from flowIn (Pt, Tt, W, FAR)
+ * 2. Evaluate real gas gamma, Cp, R at inlet conditions via Thermo
+ * 3. Get ambient static pressure from ISA
+ * 4. Compute NPR and critical NPR — determine choked/unchoked
+ * 5. Get Cfg — from map if loaded, else fixed fallback value
+ * 6. Compute ideal jet velocity (isentropic expansion)
+ * 7. Apply Cfg to get actual jet velocity
+ * 8. Calculate throat area from flow function
+ * 9. Compute gross thrust Fg
+ * 10. Write results to flowOut
+ *
+ * CFG SOURCE:
+ *   Map loaded    → NozzleMap::lookup(NPR)
+ *   No map loaded → fixed Cfg_ from constructor
  */
 
+// =========================================================================
+// Constructor
+// =========================================================================
+
 Nozzle::Nozzle(double altitude_m, double Cfg) noexcept
-    : altitude_m(altitude_m)
-    , Cfg(Cfg)
+    : altitude_m_(altitude_m)
+    , Cfg_       (Cfg)
 {}
+
+// =========================================================================
+// loadMap
+//
+// Loads a NozzleMap from file. Mirrors NPSS S_Cfg subelement pattern.
+// On success: compute() uses map lookup for Cfg.
+// On failure: falls back to fixed Cfg_ with a warning.
+// =========================================================================
+
+void Nozzle::loadMap(const std::string& filepath)
+{
+    map_.emplace(filepath);
+
+    if (!map_->isLoaded())
+    {
+        std::cerr << "[Nozzle] WARNING: map failed to load from '"
+                  << filepath << "' — using fixed Cfg=" << Cfg_ << "\n";
+        map_.reset();
+    }
+}
+
+// =========================================================================
+// compute
+//
+// Performs nozzle thermodynamics. Called once per solver iteration.
+// =========================================================================
 
 void Nozzle::compute() noexcept
 {
@@ -31,58 +67,59 @@ void Nozzle::compute() noexcept
     const double Tt_in = flowIn.Tt;
     const double W     = flowIn.W;
 
-    // Step 2 — Real gas properties at inlet conditions via Thermo
+    // Step 2 — Real gas properties at inlet conditions
     const double gamma = Thermo::getGamma(Tt_in, flowIn.FAR);
     const double Cp    = Thermo::getCp   (Tt_in, flowIn.FAR);
-    // R derived from real gas Cp and gamma — consistent with Thermo mixture
     const double R     = Cp * (gamma - 1.0) / gamma;   // [J/kg·K]
 
-    // Step 3 — Get ambient static pressure from ISA
-    double Ps_amb = ISA::getStaticPressure(altitude_m);
+    // Step 3 — Ambient static pressure from ISA
+    const double Ps_amb = ISA::getStaticPressure(altitude_m_);
 
-    // Step 4 — Nozzle pressure ratio and critical NPR
+    // Step 4 — NPR and critical NPR
     // NPR_crit = ((γ+1)/2)^(γ/(γ-1))
     NPR = Pt_in / Ps_amb;
-    double NPR_crit = std::pow((gamma + 1.0) / 2.0, gamma / (gamma - 1.0));
+    const double NPR_crit = std::pow((gamma + 1.0) / 2.0,
+                                      gamma / (gamma - 1.0));
 
-    // Step 4b — Determine exit static pressure
+    // Determine exit static pressure
     // Unchoked: Ps_exit = Ps_ambient
     // Choked:   Ps_exit = Pt_inlet / NPR_crit
-    double Ps_exit = (NPR < NPR_crit) ? Ps_amb : Pt_in / NPR_crit;
+    const double Ps_exit = (NPR < NPR_crit) ? Ps_amb : Pt_in / NPR_crit;
 
-    // Step 5 — Ideal jet velocity (isentropic expansion)
-    // Vjet_ideal = sqrt(2 × Cp × Tt_in × (1 - (Ps_exit/Pt_in)^((γ-1)/γ)))
-    double pressure_ratio = Ps_exit / Pt_in;
-    double Vjet_ideal = std::sqrt(
-        2.0 * Cp * Tt_in * (1.0 - std::pow(pressure_ratio, (gamma - 1.0) / gamma))
+    // Step 5 — Get Cfg from map or fallback
+    const double Cfg = map_.has_value() ? map_->lookup(NPR) : Cfg_;
+
+    // Step 6 — Ideal jet velocity (isentropic expansion)
+    const double pressure_ratio = Ps_exit / Pt_in;
+    const double Vjet_ideal = std::sqrt(
+        2.0 * Cp * Tt_in
+            * (1.0 - std::pow(pressure_ratio, (gamma - 1.0) / gamma))
     );
 
-    // Step 6 — Actual jet velocity with nozzle efficiency
+    // Step 7 — Actual jet velocity
     Vjet = Cfg * Vjet_ideal;
 
-    // Step 7 — Calculate throat area from flow function
-    // At choked conditions MN = 1.0
-    // FF  = sqrt(γ/R) × MN × (1 + (γ-1)/2 × MN²)^(-(γ+1)/(2×(γ-1)))
-    // Ath = W × sqrt(Tt_in) / (Pt_in × FF)
-    double MN_throat = (NPR >= NPR_crit) ? 1.0 : Vjet / std::sqrt(gamma * R * Tt_in);
-    double FF_exp    = -(gamma + 1.0) / (2.0 * (gamma - 1.0));
-    double FF        = std::sqrt(gamma / R) * MN_throat *
-                       std::pow(1.0 + (gamma - 1.0) / 2.0 * MN_throat * MN_throat, FF_exp);
+    // Step 8 — Throat area from flow function
+    // At choked conditions MN_throat = 1.0
+    const double MN_throat = (NPR >= NPR_crit)
+                           ? 1.0
+                           : Vjet / std::sqrt(gamma * R * Tt_in);
+    const double FF_exp = -(gamma + 1.0) / (2.0 * (gamma - 1.0));
+    const double FF     = std::sqrt(gamma / R) * MN_throat
+                        * std::pow(1.0 + (gamma - 1.0) / 2.0
+                                       * MN_throat * MN_throat, FF_exp);
     Ath = (W * std::sqrt(Tt_in)) / (Pt_in * FF);
 
-    // Step 8 — Compute gross thrust
+    // Step 9 — Gross thrust
     // Fg = W × Vjet + (Ps_exit - Ps_amb) × Ath
     Fg = W * Vjet + (Ps_exit - Ps_amb) * Ath;
 
-    // Step 9 — Update flowOut
-    // Pt is the total pressure — conserved through an ideal nozzle (losses captured by Cfg)
-    flowOut.Pt  = Pt_in;
-    flowOut.Tt  = Tt_in;     // total temperature conserved (adiabatic)
-    flowOut.W   = W;
-    flowOut.MN  = MN_throat;
-    flowOut.FAR = flowIn.FAR;
-
-    // Real gas Cp and gamma at exit — same as inlet (Tt and FAR unchanged)
+    // Step 10 — Update flowOut
+    flowOut.Pt    = Pt_in;
+    flowOut.Tt    = Tt_in;
+    flowOut.W     = W;
+    flowOut.MN    = MN_throat;
+    flowOut.FAR   = flowIn.FAR;
     flowOut.Cp    = Thermo::getCp   (flowOut.Tt, flowOut.FAR);
     flowOut.gamma = Thermo::getGamma(flowOut.Tt, flowOut.FAR);
 }
