@@ -115,6 +115,12 @@ int main(int argc, char* argv[])
     }
 
     // =========================================================================
+    // MAP FILE PATHS
+    // =========================================================================
+    // Relative to build directory — maps/synthetic/ is at ../maps/synthetic/
+    const std::string MAP_DIR = "../maps/synthetic/";
+
+    // =========================================================================
     // SHARED FLIGHT CONDITIONS
     // =========================================================================
     constexpr double altitude_ft = 35000.0;
@@ -147,6 +153,14 @@ int main(int argc, char* argv[])
         // The Newton-Raphson solver will find the real gas balanced value
         Turbine    turbine(2.286, 0.89);
         Nozzle     nozzle(altitude_m, 0.98);
+
+        // Load performance maps — NPSS S_map subelement pattern
+        // NOTE: Inlet and Nozzle maps loaded now — their outputs are not
+        // solver independent variables. Compressor and Turbine maps are
+        // deferred to Phase 4 when the solver iterates shaft speed (Nc%)
+        // rather than PR directly.
+        inlet.loadMap (MAP_DIR + "inlet.map");
+        nozzle.loadMap(MAP_DIR + "nozzle.map");
 
         Shaft hpShaft("HP Shaft");
         hpShaft.addElement(&compressor);
@@ -318,6 +332,14 @@ int main(int argc, char* argv[])
         Afterburner tf_afterburner(2100.0);
         Nozzle      tf_nozzle(altitude_m, 0.98);
         FanNozzle   tf_fanNozzle(altitude_m, 0.98);
+
+        // Load performance maps — NPSS S_map subelement pattern
+        // NOTE: Inlet and Nozzle maps loaded now. Fan, Compressor, and
+        // Turbine maps deferred to Phase 4 — solver must iterate Nc%
+        // not PR directly for map-based operation.
+        tf_inlet.loadMap    (MAP_DIR + "inlet.map");
+        tf_nozzle.loadMap   (MAP_DIR + "nozzle.map");
+        tf_fanNozzle.loadMap(MAP_DIR + "fan_nozzle.map");
 
         // --- Shaft connections ---
         Shaft tf_hpShaft("HP Shaft");

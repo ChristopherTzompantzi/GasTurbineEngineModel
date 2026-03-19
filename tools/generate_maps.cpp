@@ -268,9 +268,9 @@ static void generateTurbineMap(const std::string& filepath,
         // Turbine PR — nearly constant with Nc, slight variation
         const double PR_nc = PR_d * (0.92 + 0.08 * nc_frac);
 
-        // DhT range for this speed line
-        const double DhT_min = DhT_d * 0.50;
-        const double DhT_max = DhT_d * 1.30;
+        // Design DhT at t=0.5 (midpoint) — symmetric range around design
+        const double DhT_min = DhT_d * 0.60;   // midpoint = 0.60 + 0.5*(1.40-0.60) = DhT_d
+        const double DhT_max = DhT_d * 1.40;
 
         f << "SPEED_LINE  Nc=" << std::setprecision(1) << Nc
           << std::setprecision(4) << "\n";
@@ -280,9 +280,11 @@ static void generateTurbineMap(const std::string& filepath,
             const double t   = static_cast<double>(k) / (N_PTS - 1);
             const double DhT = DhT_min + t * (DhT_max - DhT_min);
 
-            // PR increases with DhT loading
-            const double PR = 1.0 + (PR_nc - 1.0)
-                            * std::pow(DhT / DhT_d, 0.8);
+            // PR symmetric around PR_nc at t=0.5 (design DhT)
+            const double PR_high = PR_nc * 1.12;
+            const double PR_low  = PR_nc * 0.88;
+            // At t=0.5: PR = (PR_high + PR_low)/2 = PR_nc exactly
+            const double PR = PR_high + t * (PR_low - PR_high);
 
             // Efficiency — peaks near design DhT
             double eff = eff_d * (1.0 - 0.8 * std::pow(DhT/DhT_d - 1.0, 2.0));
