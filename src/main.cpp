@@ -155,16 +155,20 @@ int main(int argc, char* argv[])
         Nozzle     nozzle(altitude_m, 0.98);
 
         // Load performance maps — NPSS S_map subelement pattern
-        // NOTE: Inlet and Nozzle maps loaded now — their outputs are not
-        // solver independent variables. Compressor and Turbine maps are
-        // deferred to Phase 4 when the solver iterates shaft speed (Nc%)
-        // rather than PR directly.
-        inlet.loadMap (MAP_DIR + "inlet.map");
-        nozzle.loadMap(MAP_DIR + "nozzle.map");
+        inlet.loadMap     (MAP_DIR + "inlet.map");
+        compressor.loadMap(MAP_DIR + "hp_compressor.map");
+        turbine.loadMap   (MAP_DIR + "hp_turbine.map");
+        nozzle.loadMap    (MAP_DIR + "nozzle.map");
 
-        Shaft hpShaft("HP Shaft");
+        // HP shaft — design speed 15,000 RPM physical
+        // Solver will find operating shaft speed from map shaft balance
+        Shaft hpShaft("HP Shaft", 15000.0);
         hpShaft.addElement(&compressor);
         hpShaft.addElement(&turbine);
+
+        // Connect elements to shaft — enables corrected speed computation
+        compressor.connectShaft(&hpShaft);
+        turbine.connectShaft   (&hpShaft);
 
         // --- Set inlet mass flow ---
         constexpr double W_target = 20.0;   // kg/s — fixed for turbojet
@@ -186,8 +190,8 @@ int main(int argc, char* argv[])
         auto tj_cycleEvaluator = [&](const std::vector<double>& x)
             -> std::vector<double>
         {
-            // Inject independent variable
-            turbine.setPR(x[0]);
+            // Inject independent variable — shaft speed [RPM]
+            hpShaft.setSpeed(x[0]);
 
             // Run turbojet cycle
             inlet.compute();
@@ -213,13 +217,14 @@ int main(int argc, char* argv[])
 
         // Construct and run solver
         // Scale: {1e5} — shaft balance in J/kg
-        Solver tj_solver(tj_cycleEvaluator, {1.0e5});
-        const std::vector<double> tj_x0 = { turbine.PR_t };
+        // Scale: {1e4} — shaft speed in RPM, O(10000)
+        Solver tj_solver(tj_cycleEvaluator, {1.0e4});
+        const std::vector<double> tj_x0 = { 14000.0 };   // initial guess near operating point
         const SolverResult tj_result = tj_solver.solve(tj_x0);
-        Solver::printResult(tj_result, {"PR_t"});
+        Solver::printResult(tj_result, {"N_hp [RPM]"});
 
-        // --- Final print pass — re-run cycle with converged PR_t ---
-        turbine.setPR(tj_result.x[0]);
+        // --- Final print pass — re-run cycle with converged shaft speed ---
+        hpShaft.setSpeed(tj_result.x[0]);
 
         inlet.compute();
         printStation("Station 2 — Inlet Exit", inlet.flowOut);
@@ -334,22 +339,31 @@ int main(int argc, char* argv[])
         FanNozzle   tf_fanNozzle(altitude_m, 0.98);
 
         // Load performance maps — NPSS S_map subelement pattern
-        // NOTE: Inlet and Nozzle maps loaded now. Fan, Compressor, and
-        // Turbine maps deferred to Phase 4 — solver must iterate Nc%
-        // not PR directly for map-based operation.
-        tf_inlet.loadMap    (MAP_DIR + "inlet.map");
-        tf_nozzle.loadMap   (MAP_DIR + "nozzle.map");
-        tf_fanNozzle.loadMap(MAP_DIR + "fan_nozzle.map");
+        tf_inlet.loadMap      (MAP_DIR + "inlet.map");
+        tf_fan.loadMap        (MAP_DIR + "fan.map");
+        tf_compressor.loadMap (MAP_DIR + "hp_compressor.map");
+        tf_turbine_hp.loadMap (MAP_DIR + "hp_turbine.map");
+        tf_turbine_lp.loadMap (MAP_DIR + "lp_turbine.map");
+        tf_nozzle.loadMap     (MAP_DIR + "nozzle.map");
+        tf_fanNozzle.loadMap  (MAP_DIR + "fan_nozzle.map");
 
         // --- Shaft connections ---
-        Shaft tf_hpShaft("HP Shaft");
+        // HP shaft — design speed 15,000 RPM
+        Shaft tf_hpShaft("HP Shaft", 15000.0);
         tf_hpShaft.addElement(&tf_compressor);
         tf_hpShaft.addElement(&tf_turbine_hp);
 
-        Shaft tf_lpShaft("LP Shaft");
+        // LP shaft — design speed 8,000 RPM
+        Shaft tf_lpShaft("LP Shaft", 8000.0);
         // NOTE: Fan is NOT added via getWork() — mixed mass flow bases.
         // LP balance verified manually in physical power [W].
         tf_lpShaft.addElement(&tf_turbine_lp);
+
+        // Connect elements to shafts
+        tf_compressor.connectShaft(&tf_hpShaft);
+        tf_turbine_hp.connectShaft(&tf_hpShaft);
+        tf_fan.connectShaft       (&tf_lpShaft);
+        tf_turbine_lp.connectShaft(&tf_lpShaft);
 
         // --- Target mass flow ---
         constexpr double tf_W_target = 60.0;   // kg/s — solver will enforce this
@@ -385,9 +399,9 @@ int main(int argc, char* argv[])
         auto tf_cycleEvaluator = [&](const std::vector<double>& x)
             -> std::vector<double>
         {
-            // Inject independent variables
-            tf_turbine_hp.setPR(x[0]);
-            tf_turbine_lp.setPR(x[1]);
+            // Inject independent variables — shaft speeds [RPM]
+            tf_hpShaft.setSpeed(x[0]);
+            tf_lpShaft.setSpeed(x[1]);
             tf_inlet.flowIn.W = x[2];
 
             // Run full turbofan cycle
@@ -440,20 +454,17 @@ int main(int argc, char* argv[])
         };
 
         // --- Construct and run solver ---
-        // Scale factors match residual units: J/kg, W, kg/s
-        Solver tf_solver(tf_cycleEvaluator, {1.0e5, 1.0e6, 1.0});
-        const std::vector<double> tf_x0 = { tf_turbine_hp.PR_t,
-                                             tf_turbine_lp.PR_t,
+        // Scale factors: RPM O(10000), RPM O(10000), kg/s O(1)
+        Solver tf_solver(tf_cycleEvaluator, {1.0e4, 1.0e4, 1.0});
+        const std::vector<double> tf_x0 = { 15000.0,   // HP design shaft speed [RPM]
+                                             8000.0,    // LP design shaft speed [RPM]
                                              tf_W_target };
         const SolverResult tf_result = tf_solver.solve(tf_x0);
-        Solver::printResult(tf_result, {"PR_t_hp", "PR_t_lp", "W"});
+        Solver::printResult(tf_result, {"N_hp [RPM]", "N_lp [RPM]", "W"});
 
         // --- Final print pass — re-run cycle with converged solution ---
-        // The solver's last lambda call already set all element states to the
-        // converged values. This pass re-runs the cycle to ensure the print
-        // stations reflect the final converged x exactly.
-        tf_turbine_hp.setPR(tf_result.x[0]);
-        tf_turbine_lp.setPR(tf_result.x[1]);
+        tf_hpShaft.setSpeed(tf_result.x[0]);
+        tf_lpShaft.setSpeed(tf_result.x[1]);
         tf_inlet.flowIn.W = tf_result.x[2];
 
         // Station 2 — Inlet exit
