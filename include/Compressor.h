@@ -2,6 +2,7 @@
 #define COMPRESSOR_H
 
 #include "Element.h"
+#include "Shaft.h"
 #include "CompressorMap.h"
 #include <optional>
 
@@ -13,8 +14,8 @@
  *
  * WHAT THE COMPRESSOR DOES:
  * 1. Receives flow from Inlet at compressor face conditions
- * 2. Computes corrected mass flow Wc from inlet conditions
- * 3. Looks up PR and eff from CompressorMap at (Wc, Nc%) if map loaded
+ * 2. Computes corrected mass flow Wc and corrected speed Nc from shaft
+ * 3. Looks up PR and eff from CompressorMap at (Wc, Nc) if map loaded
  *    Otherwise uses fixed PR_ and eff_ from constructor as fallback
  * 4. Raises total pressure by pressure ratio (PR)
  * 5. Raises total temperature accounting for isentropic efficiency (eff)
@@ -23,32 +24,32 @@
  *
  * THERMODYNAMIC EQUATIONS (real gas via Thermo):
  *   Wc             = W * sqrt(Tt_in / T_ref) / (Pt_in / P_ref)  [kg/s corrected]
+ *   Nc             = N_rpm / sqrt(Tt_in / T_ref)                 [RPM corrected]
  *   Pt_exit        = Pt_inlet × PR
  *   gamma          = Thermo::getGamma(Tt_inlet, FAR)
  *   Tt_exit_ideal  = Tt_inlet × PR^((γ-1)/γ)
  *   Tt_exit        = Tt_inlet + (Tt_exit_ideal - Tt_inlet) / eff
  *   dHt            = Cp × (Tt_exit - Tt_inlet)                   [J/kg]
  *
- * CORRECTED FLOW:
- *   Wc = W * sqrt(Tt_in / 288.15) / (Pt_in / 101325.0)
- *   Reference conditions: T_ref=288.15 K, P_ref=101325 Pa (ISA sea level)
- *   Wc is the map lookup x-axis in Phase 3.
+ * CORRECTED FLOW AND SPEED:
+ *   Wc = W * sqrt(Tt_in / 288.15) / (Pt_in / 101325.0)   [kg/s corrected]
+ *   Nc = N_rpm / sqrt(Tt_in / 288.15)                     [RPM corrected]
+ *   Reference: T_ref=288.15 K, P_ref=101325 Pa (ISA sea level)
  *
- * MAP LOOKUP (Phase 3):
- *   Nc% = 100.0 — design speed line used throughout Phase 3.
- *   Phase 4 will replace 100.0 with computed shaft corrected speed.
+ * MAP LOOKUP:
+ *   Shaft connected → Nc computed from shaft N_rpm → map lookup at (Wc, Nc)
+ *   No shaft        → map lookup at design Nc from map header (design point)
+ *   No map          → fixed PR_ and eff_ from constructor
  *
  * NPSS ALIGNMENT:
- *   loadMap() mirrors NPSS S_map subelement pattern:
- *     compressor.S_map.filename = "hp_compressor.map"
- *     compressor.S_map.load()
+ *   loadMap()      mirrors NPSS S_map subelement pattern
+ *   connectShaft() mirrors NPSS shaft connection — element reads Nmech
  *
  * ISENTROPIC EFFICIENCY:
  *   eff = 1.0 → perfect isentropic compression (no losses).
  *   Typical range: 0.85–0.92 for modern compressors.
  *
- * FUTURE WORK (Phase 4):
- *   Replace Nc%=100.0 with computed corrected shaft speed.
+ * FUTURE WORK:
  *   Surge margin and stall detection.
  *   Polytropic efficiency as alternative input mode.
  *
@@ -57,7 +58,7 @@
  *   eff  [-]
  *   dHt  [J/kg]
  *   Wc   [kg/s corrected]
- *   Nc   [% of design corrected speed]
+ *   Nc   [RPM corrected]
  */
 
 class Compressor : public Element {
@@ -65,7 +66,7 @@ public:
 
     /*
      * Constructor — sets fallback pressure ratio and isentropic efficiency.
-     * Call loadMap() after construction to enable map-based PR and eff.
+     * Call loadMap() and connectShaft() after construction.
      *
      * @param PR   Fallback pressure ratio [-]
      * @param eff  Fallback isentropic efficiency [-]
@@ -83,6 +84,16 @@ public:
     void loadMap(const std::string& filepath);
 
     /*
+     * connectShaft — connects this compressor to its driving shaft.
+     * Mirrors NPSS shaft connection pattern.
+     * Once connected, compute() reads N_rpm from shaft to compute Nc.
+     * If no shaft connected, map is queried at design Nc from header.
+     *
+     * @param shaft  Pointer to the connected Shaft
+     */
+    void connectShaft(Shaft* shaft) noexcept { shaft_ = shaft; }
+
+    /*
      * compute — performs compressor thermodynamics.
      * Implements Element::compute().
      */
@@ -94,14 +105,6 @@ public:
      */
     double getWork() const noexcept override { return -dHt; }
 
-    /*
-     * setPR — sets the fallback pressure ratio directly.
-     * Used by the solver when operating without a map.
-     *
-     * @param PR  Pressure ratio [-]
-     */
-    void setPR(double PR) noexcept { PR_ = PR; }
-
     // Total enthalpy rise [J/kg] — available after compute()
     // dHt = Cp × (Tt_exit - Tt_inlet)
     double dHt = 0.0;
@@ -112,9 +115,10 @@ private:
     // PRIVATE MEMBERS
     // =========================================================================
 
-    double                        PR_;    // Fallback pressure ratio [-]
-    double                        eff_;   // Fallback isentropic efficiency [-]
-    std::optional<CompressorMap>  map_;   // CompressorMap subelement — present only if loadMap() called
+    double                        PR_;     // Fallback pressure ratio [-]
+    double                        eff_;    // Fallback isentropic efficiency [-]
+    std::optional<CompressorMap>  map_;    // CompressorMap subelement — present only if loadMap() called
+    Shaft*                        shaft_ = nullptr;  // Connected shaft — null if not connected
 };
 
 #endif // COMPRESSOR_H

@@ -11,24 +11,29 @@
  * COMPUTE SEQUENCE:
  * 1. Read inlet conditions from flowIn (Pt, Tt, FAR)
  * 2. Evaluate real gas gamma and Cp at inlet conditions via Thermo
- * 3. Compute initial Tt_exit using current PR_t_ and eff_t_ (fallback)
- * 4. Compute DhT from initial Tt_exit — map lookup x-axis
- * 5. Get PR_t and eff_t — from map if loaded, else fixed fallback values
- * 6. Recompute Tt_exit with final PR_t and eff_t
- * 7. Compute exit total pressure — Pt_exit = Pt_inlet / PR_t
- * 8. Compute dHt — specific work extracted [J/kg]
- * 9. Pass W, MN, FAR through unchanged
- * 10. Write real gas Cp and gamma to flowOut via Thermo at exit conditions
+ * 3. Compute corrected speed Nc from shaft N_rpm (if shaft connected)
+ * 4. Estimate initial Tt_exit using fallback PR_t_ and eff_t_
+ * 5. Compute DhT from initial Tt_exit — map lookup x-axis
+ * 6. Get PR_t and eff_t — from map lookup at (DhT, Nc) if map loaded,
+ *    else fixed fallback values
+ * 7. Recompute Tt_exit with final PR_t and eff_t
+ * 8. Compute exit total pressure — Pt_exit = Pt_inlet / PR_t
+ * 9. Compute dHt — specific work extracted [J/kg]
+ * 10. Pass W, MN, FAR through unchanged
+ * 11. Write real gas Cp and gamma to flowOut via Thermo at exit conditions
  *
  * PR_T AND EFF_T SOURCE:
- *   Map loaded    → TurbineMap::lookup(DhT, 100.0) [Phase 3: Nc%=100 always]
- *   No map loaded → fixed PR_t_ and eff_t_ from constructor / setPR()
+ *   Shaft + map → TurbineMap::lookup(DhT, Nc)        [Nc from shaft N_rpm]
+ *   Map only    → TurbineMap::lookup(DhT, Nc_design)  [design Nc from header]
+ *   No map      → fixed PR_t_ and eff_t_ from constructor / setPR()
  *
  * DhT COMPUTATION:
- *   DhT = Cp * (Tt_in - Tt_exit) / Tt_in  [-]
- *   Tt_exit is first estimated using fallback PR_t_ and eff_t_.
- *   At design point (Nc%=100) the map returns design values exactly.
+ *   DhT = Cp * (Tt_in - Tt_exit_0) / Tt_in  [-]
+ *   Tt_exit_0 estimated from fallback PR_t_ and eff_t_.
+ *   At design speed the map returns design values exactly.
  */
+
+static constexpr double T_REF = 288.15;    // ISA sea level temperature [K]
 
 // =========================================================================
 // Constructor
@@ -75,26 +80,32 @@ void Turbine::compute() noexcept
     // Step 2 — Real gas properties at inlet conditions
     const double gamma = Thermo::getGamma(Tt_in, flowIn.FAR);
     const double Cp    = Thermo::getCp   (Tt_in, flowIn.FAR);
+    const double exponent = (gamma - 1.0) / gamma;
 
-    // Step 3 — Initial Tt_exit using fallback PR_t_ and eff_t_
-    // Used to compute DhT for map lookup
-    const double exponent     = (gamma - 1.0) / gamma;
-    const double Tt_ideal_0   = Tt_in * std::pow(1.0 / PR_t_, exponent);
-    const double Tt_exit_0    = Tt_in - eff_t_ * (Tt_in - Tt_ideal_0);
+    // Step 3 — Compute corrected speed from shaft
+    // Nc = N_rpm / sqrt(Tt_in / T_ref)   [RPM corrected]
+    // No shaft → use design Nc from map header (design point operation)
+    double Nc = 0.0;
+    if (shaft_ != nullptr)
+        Nc = shaft_->getSpeed() / std::sqrt(Tt_in / T_REF);
+    else if (map_.has_value())
+        Nc = map_->designPoint().Nc;
 
-    // Step 4 — Compute DhT for map lookup
+    // Step 4 — Estimate initial Tt_exit using fallback values
+    const double Tt_ideal_0 = Tt_in * std::pow(1.0 / PR_t_, exponent);
+    const double Tt_exit_0  = Tt_in - eff_t_ * (Tt_in - Tt_ideal_0);
+
+    // Step 5 — Compute DhT for map lookup
     // DhT = Cp * (Tt_in - Tt_exit) / Tt_in  [-]
     const double DhT = Cp * (Tt_in - Tt_exit_0) / Tt_in;
 
-    // Step 5 — Get PR_t and eff_t from map or fallback
-    // Phase 3: Nc% = 100.0 — design speed line always
-    // Phase 4: replace 100.0 with computed corrected shaft speed
+    // Step 6 — Get PR_t and eff_t from map or fallback
     double PR_t_use  = PR_t_;
     double eff_t_use = eff_t_;
 
     if (map_.has_value())
     {
-        const TurbineMapResult res = map_->lookup(DhT, 100.0);
+        const TurbineMapResult res = map_->lookup(DhT, Nc);
         PR_t_use  = res.PR;
         eff_t_use = res.eff;
     }
@@ -102,22 +113,22 @@ void Turbine::compute() noexcept
     // Update public PR_t to reflect current operating value
     PR_t = PR_t_use;
 
-    // Step 6 — Recompute Tt_exit with final PR_t and eff_t
+    // Step 7 — Recompute Tt_exit with final PR_t and eff_t
     const double Tt_ideal = Tt_in * std::pow(1.0 / PR_t_use, exponent);
     flowOut.Tt = Tt_in - eff_t_use * (Tt_in - Tt_ideal);
 
-    // Step 7 — Exit total pressure
+    // Step 8 — Exit total pressure
     flowOut.Pt = Pt_in / PR_t_use;
 
-    // Step 8 — Specific work extracted [J/kg]
+    // Step 9 — Specific work extracted [J/kg]
     dHt = Cp * (Tt_in - flowOut.Tt);
 
-    // Step 9 — Pass remaining properties through unchanged
+    // Step 10 — Pass remaining properties through unchanged
     flowOut.W   = flowIn.W;
     flowOut.MN  = flowIn.MN;
     flowOut.FAR = flowIn.FAR;
 
-    // Step 10 — Real gas Cp and gamma at exit conditions
+    // Step 11 — Real gas Cp and gamma at exit conditions
     flowOut.Cp    = Thermo::getCp   (flowOut.Tt, flowOut.FAR);
     flowOut.gamma = Thermo::getGamma(flowOut.Tt, flowOut.FAR);
 }

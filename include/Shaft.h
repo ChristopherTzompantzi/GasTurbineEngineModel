@@ -13,71 +13,109 @@
  * WHAT THE SHAFT DOES:
  * At steady state the net power on the shaft must be zero — power delivered
  * by turbines must exactly equal power consumed by compressors and fans.
- * The Shaft class tracks all connected elements and computes the balance.
  *
- * SIGN CONVENTION (inherited from Element::getWork()):
- *   Turbines   → positive getWork() — deliver power TO the shaft
- *   Compressors/Fans → negative getWork() — consume power FROM the shaft
- *   Balance = sum of all getWork() values → zero at steady state
+ * SHAFT SPEED (Phase 4):
+ * N_rpm is the current physical shaft speed [RPM] — set by the solver on
+ * each iteration. N_design_rpm is the design point shaft speed [RPM] set
+ * at construction. Elements read N_rpm from their connected shaft to compute
+ * corrected speed Nc for map lookup:
+ *   Nc = N_rpm / sqrt(Tt_in / T_ref)   [RPM corrected]
  *
- * USAGE — Single spool turbojet:
- *   Shaft hpShaft("HP Shaft");
- *   hpShaft.addElement(&compressor);
- *   hpShaft.addElement(&turbine);
- *   // after all elements have called compute():
- *   hpShaft.computeBalance();
- *   double error = hpShaft.getBalanceError();
+ * SIGN CONVENTION:
+ *   Turbines            → positive getWork() — deliver power TO shaft
+ *   Compressors/Fans    → negative getWork() — consume power FROM shaft
+ *   Balance = sum of all getWork() → zero at steady state
  *
- * USAGE — Two spool turbofan:
- *   Shaft lpShaft("LP Shaft");   // Fan ←→ LP Turbine
- *   Shaft hpShaft("HP Shaft");   // HP Compressor ←→ HP Turbine
+ * NPSS ALIGNMENT:
+ *   Mirrors NPSS Shaft element — Nmech is the physical shaft speed [RPM]
+ *   iterated by the solver. NmechDes is the design speed reference.
  *
- * PHASE 2:
- *   The Newton-Raphson solver will iterate turbine pressure ratios until
- *   getBalanceError() → 0 on all shafts simultaneously.
- *   RPM tracking and mechanical losses will be added at that point.
+ * UNITS:
+ *   N_rpm        [RPM]
+ *   N_design_rpm [RPM]
+ *   balanceError [J/kg]
  */
 
-class Shaft
-{
+class Shaft {
 public:
-    // Constructor — name identifies the shaft in printed output
-    explicit Shaft(const std::string& name);
 
-    // Connect an element to this shaft
-    // Call this for every compressor, fan, and turbine on this shaft
-    // Order does not matter — Shaft sums all getWork() values
+    /*
+     * Constructor — name identifies shaft in output.
+     * N_design_rpm sets the reference design speed.
+     * Default 0.0 preserves backward compatibility — Phase 3 shafts
+     * do not use speed tracking.
+     *
+     * @param name          Shaft identifier string
+     * @param N_design_rpm  Design shaft speed [RPM] (default 0.0)
+     */
+    explicit Shaft(const std::string& name,
+                   double             N_design_rpm = 0.0) noexcept;
+
+    /*
+     * addElement — connects an element to this shaft.
+     * Call for every compressor, fan, and turbine on this shaft.
+     */
     void addElement(Element* element);
 
-    // Compute shaft power balance
-    // Must be called AFTER all connected elements have called compute()
-    // Stores result internally — retrieve with getBalanceError()
+    /*
+     * setSpeed — sets current physical shaft speed [RPM].
+     * Called by the solver on each Newton iteration.
+     *
+     * @param N_rpm  Physical shaft speed [RPM]
+     */
+    void setSpeed(double N_rpm) noexcept { N_rpm_ = N_rpm; }
+
+    /*
+     * getSpeed — returns current physical shaft speed [RPM].
+     * Read by Compressor, Fan, Turbine to compute corrected speed.
+     */
+    double getSpeed() const noexcept { return N_rpm_; }
+
+    /*
+     * getDesignSpeed — returns design shaft speed [RPM].
+     */
+    double getDesignSpeed() const noexcept { return N_design_rpm_; }
+
+    /*
+     * computeBalance — computes shaft power balance.
+     * Must be called AFTER all connected elements have called compute().
+     */
     void computeBalance() noexcept;
 
-    // Returns net shaft work [J/kg core air]
-    // Zero means perfectly balanced — turbine work equals compressor work
-    // Positive means turbine is over-powering — PR_t too high
-    // Negative means turbine is under-powering — PR_t too low
-    double getBalanceError() const noexcept { return balanceError; }
+    /*
+     * getBalanceError — returns net shaft work [J/kg].
+     * Zero = balanced. Positive = over-powered. Negative = under-powered.
+     */
+    double getBalanceError() const noexcept { return balanceError_; }
 
-    // Returns balance error as a percentage of compressor work
-    // More intuitive than raw J/kg for validation purposes
+    /*
+     * getBalanceErrorPercent — balance error as % of compressor work.
+     */
     double getBalanceErrorPercent() const noexcept;
 
-    // Print shaft balance summary to stdout
+    /*
+     * printBalance — prints shaft balance summary to stdout.
+     */
     void printBalance() const noexcept;
 
-    // Shaft name — used in printBalance() output
-    const std::string& getName() const noexcept { return name; }
+    /*
+     * getName — returns shaft name.
+     */
+    const std::string& getName() const noexcept { return name_; }
 
 private:
-    // name and elements initialized via constructor/default-init.
-    // Doubles have in-class defaults — they are accumulators reset by computeBalance().
-    std::string           name;
-    std::vector<Element*> elements;   // all connected elements
-    double                balanceError        = 0.0;
-    double                totalDrivenWork     = 0.0;   // compressors + fans [J/kg]
-    double                totalDriverWork     = 0.0;   // turbines [J/kg]
+
+    // =========================================================================
+    // PRIVATE MEMBERS
+    // =========================================================================
+
+    std::string           name_;            // Shaft identifier
+    std::vector<Element*> elements_;        // Connected elements
+    double                N_rpm_        = 0.0;   // Current shaft speed [RPM]
+    double                N_design_rpm_ = 0.0;   // Design shaft speed [RPM]
+    double                balanceError_  = 0.0;   // Net shaft work [J/kg]
+    double                totalDrivenWork_ = 0.0;  // Compressors + fans [J/kg]
+    double                totalDriverWork_ = 0.0;  // Turbines [J/kg]
 };
 
 #endif // SHAFT_H

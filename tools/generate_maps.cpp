@@ -22,27 +22,22 @@
 //   Fan Nozzle   : NPR=3.50, Cfg=0.98
 //   Inlet        : MN=0.85,  eta_r=0.97
 //
+// SHAFT DESIGN SPEEDS (Phase 4 — NC_UNITS RPM):
+//   HP shaft  : N_design = 15,000 RPM
+//   LP shaft  : N_design =  8,000 RPM
+//   Design inlet conditions: Tt_in = 250.4 K, T_ref = 288.15 K
+//   theta     = sqrt(250.4 / 288.15) = 0.9328
+//   HP Nc_d   = 15000 / 0.9328 = 16,078 RPM corrected
+//   LP Nc_d   =  8000 / 0.9328 =  8,575 RPM corrected
+//
+// MAP AXES (Phase 4):
+//   NC_UNITS RPM — speed lines stored in corrected RPM
+//   Compressor/Fan: (Wc [kg/s], Nc [RPM corrected])
+//   Turbine:        (DhT [-],   Nc [RPM corrected])
+//
 // SYNTHETIC MAP GENERATION METHOD:
-//   Speed lines are generated at Nc = 70, 80, 90, 95, 100, 105 %
-//
-//   Compressor/Fan PR scaling:
-//     PR(Nc) = 1 + (PR_d - 1) * (Nc/100)^n_PR
-//     n_PR = 2.0 (fan), 2.2 (HP compressor)
-//
-//   Compressor/Fan efficiency scaling:
-//     eff_peak(Nc) = eff_d * (1 - 0.15 * (1 - Nc/100)^2)
-//     Parabolic hill along each speed line centred at mid-Wc
-//
-//   Turbine DhT range:
-//     DhT_d computed from design point: Cp*(Tt_in - Tt_exit)/Tt_in
-//     Speed lines span DhT = 0.5*DhT_d to 1.3*DhT_d
-//     PR increases with DhT, efficiency peaks near design DhT
-//
-//   Nozzle Cfg:
-//     Sigmoid rise from ~0.94 at NPR=1.0 to plateau at design Cfg
-//
-//   Inlet eta_r:
-//     Parabolic drop from 1.0 at MN=0 to design eta_r at design MN
+//   Speed lines at 70, 80, 90, 95, 100, 105 % of Nc_design [RPM corrected]
+//   PR and eff scaling identical to Phase 3 — only axis units change.
 //
 // SOURCE:
 //   Mattingly, J.D., "Elements of Gas Turbine Propulsion",
@@ -59,7 +54,25 @@
 #include <vector>
 
 // =========================================================================
-// File header — written at the top of every map file
+// DESIGN SHAFT SPEEDS AND CORRECTED SPEED REFERENCE
+// =========================================================================
+
+// Physical design shaft speeds [RPM]
+static constexpr double N_HP_DESIGN     = 15000.0;   // HP shaft design speed [RPM]
+static constexpr double N_LP_DESIGN     =  8000.0;   // LP shaft design speed [RPM]
+
+// Design inlet conditions for corrected speed reference
+// Altitude 35,000 ft, MN=0.85 — from Phase 2 solver results
+static constexpr double Tt_IN_DESIGN    = 250.4;     // Inlet total temperature [K]
+static constexpr double T_REF           = 288.15;    // ISA sea level reference [K]
+
+// Design corrected speeds [RPM corrected]
+// Nc_d = N_design / sqrt(Tt_in_design / T_ref)
+static const double Nc_HP_DESIGN = N_HP_DESIGN / std::sqrt(Tt_IN_DESIGN / T_REF);
+static const double Nc_LP_DESIGN = N_LP_DESIGN / std::sqrt(Tt_IN_DESIGN / T_REF);
+
+// =========================================================================
+// File header
 // =========================================================================
 
 static const std::string FILE_HEADER =
@@ -71,17 +84,18 @@ static const std::string FILE_HEADER =
     "#\n";
 
 // =========================================================================
-// writeHeader — writes the standard map file header block
+// writeHeader
 // =========================================================================
 
 static void writeHeader(std::ofstream&     f,
                         const std::string& type,
-                        const std::string& name)
+                        const std::string& name,
+                        const std::string& nc_units)
 {
     f << FILE_HEADER;
-    f << "TYPE        " << type << "\n";
-    f << "NAME        " << name << "\n";
-    f << "NC_UNITS    PERCENT\n";
+    f << "TYPE        " << type     << "\n";
+    f << "NAME        " << name     << "\n";
+    f << "NC_UNITS    " << nc_units << "\n";
     f << "SOURCE      SYNTHETIC\n";
     f << "\n";
 }
@@ -89,25 +103,14 @@ static void writeHeader(std::ofstream&     f,
 // =========================================================================
 // generateCompressorMap
 //
-// Generates a 2D compressor or fan map file.
+// Generates a 2D compressor or fan map file with NC_UNITS RPM.
 //
-// Speed lines at Nc = 70, 80, 90, 95, 100, 105 %
-// Each speed line has 5 points from near-stall to near-choke.
+// Speed lines at 70, 80, 90, 95, 100, 105 % of Nc_design [RPM corrected].
+// Wc range and PR/eff shape identical to Phase 3 — only axis units change.
 //
-// PR scaling:
-//   PR(Nc) = 1 + (PR_d - 1) * (Nc/100)^n_PR
-//
-// Efficiency:
-//   Peak eff at each speed = eff_d * (1 - 0.15 * (1 - Nc/100)^2)
-//   Parabolic hill along the speed line centred at t=0.5
-//
-// Wc range per speed line:
-//   Wc_design(Nc) = Wc_d * (Nc/100)
-//   Wc_min = Wc_design * 0.60   (near stall)
-//   Wc_max = Wc_design * 1.10   (near choke)
-//
-// VSV schedule (compressor only, not fan):
-//   Vanes close progressively from design at Nc=100% to -15 deg at Nc=70%
+// @param Nc_design  Design corrected speed [RPM corrected]
+//                   HP compressor: Nc_HP_DESIGN
+//                   Fan:           Nc_LP_DESIGN (LP shaft)
 // =========================================================================
 
 static void generateCompressorMap(const std::string& filepath,
@@ -115,6 +118,7 @@ static void generateCompressorMap(const std::string& filepath,
                                    double             PR_d,
                                    double             eff_d,
                                    double             Wc_d,
+                                   double             Nc_design,
                                    bool               has_vsv,
                                    double             n_PR)
 {
@@ -128,17 +132,18 @@ static void generateCompressorMap(const std::string& filepath,
     f << std::fixed << std::setprecision(3);
 
     // --- Header ---
-    writeHeader(f, "COMPRESSOR", name);
+    writeHeader(f, "COMPRESSOR", name, "RPM");
     f << "DESIGN_PT   Wc=" << Wc_d
-      << "  Nc=100.0  PR=" << PR_d
+      << "  Nc=" << std::setprecision(1) << Nc_design
+      << std::setprecision(3)
+      << "  PR=" << PR_d
       << "  eff=" << eff_d << "\n\n";
 
     // --- VSV schedule (compressor only) ---
     if (has_vsv)
     {
-        // VSV closes at part speed to prevent stall
-        // angle=0 at design, negative = vanes closing
-        const std::vector<std::pair<double,double>> vsv = {
+        // VSV schedule in corrected RPM — same angles as Phase 3
+        const std::vector<std::pair<double,double>> vsv_pcts = {
             {70.0, -15.0},
             {80.0, -10.0},
             {90.0,  -5.0},
@@ -148,48 +153,45 @@ static void generateCompressorMap(const std::string& filepath,
         };
 
         f << "VSV_SCHEDULE\n";
-        for (const auto& pt : vsv)
-            f << "  Nc=" << pt.first
+        for (const auto& pt : vsv_pcts)
+        {
+            const double Nc_rpm = Nc_design * pt.first / 100.0;
+            f << "  Nc=" << std::setprecision(1) << Nc_rpm
               << "  angle=" << std::showpos << pt.second
               << std::noshowpos << "\n";
+        }
         f << "END_VSV_SCHEDULE\n\n";
     }
 
     // --- Speed lines ---
+    // Speed lines at 70, 80, 90, 95, 100, 105 % of Nc_design
     const std::vector<double> nc_pcts = {70.0, 80.0, 90.0, 95.0, 100.0, 105.0};
     constexpr int N_PTS = 5;
 
-    for (const double Nc : nc_pcts)
+    for (const double pct : nc_pcts)
     {
-        const double nc_frac = Nc / 100.0;
+        const double nc_frac = pct / 100.0;
+        const double Nc_rpm  = Nc_design * nc_frac;   // corrected RPM for this line
 
-        // PR at design speed equals PR_d exactly — scale other speeds below it
-        const double PR_design_speed = 1.0 + (PR_d - 1.0) * std::pow(nc_frac, n_PR);
-        const double PR_peak = PR_design_speed;
-
-        // Peak efficiency at this speed
+        const double PR_peak  = 1.0 + (PR_d - 1.0) * std::pow(nc_frac, n_PR);
         const double eff_peak = eff_d * (1.0 - 0.15 * std::pow(1.0 - nc_frac, 2.0));
 
-        // Corrected flow range for this speed line
         const double Wc_design_nc = Wc_d * nc_frac;
-        const double Wc_min       = Wc_design_nc * 0.72;   // design point near midpoint
-        const double Wc_max       = Wc_design_nc * 1.28;   // of speed line for peak eff
+        const double Wc_min       = Wc_design_nc * 0.72;
+        const double Wc_max       = Wc_design_nc * 1.28;
 
-        f << "SPEED_LINE  Nc=" << Nc << "\n";
+        f << "SPEED_LINE  Nc=" << std::setprecision(1) << Nc_rpm
+          << std::setprecision(3) << "\n";
 
         for (int k = 0; k < N_PTS; ++k)
         {
             const double t  = static_cast<double>(k) / (N_PTS - 1);
             const double Wc = Wc_min + t * (Wc_max - Wc_min);
 
-            // PR varies symmetrically around PR_peak at t=0.5
-            // At t=0.5 (design Wc): PR = PR_peak exactly
-            const double PR_stall = PR_peak * 1.12;   // high PR near stall
-            const double PR_choke = PR_peak * 0.88;   // low PR near choke
-            // At t=0.5: PR = (PR_stall + PR_choke)/2 = PR_peak exactly
+            const double PR_stall = PR_peak * 1.12;
+            const double PR_choke = PR_peak * 0.88;
             const double PR       = PR_stall + t * (PR_choke - PR_stall);
 
-            // Efficiency — parabolic hill centred at t=0.5
             double eff = eff_peak * (1.0 - 1.5 * std::pow(t - 0.5, 2.0));
             eff = std::min(eff, 0.96);
             eff = std::max(eff, 0.60);
@@ -209,19 +211,10 @@ static void generateCompressorMap(const std::string& filepath,
 // =========================================================================
 // generateTurbineMap
 //
-// Generates a 2D turbine map file.
-// Axes: DhT [-] vs Nc [%]
-// DhT = Cp * (Tt_in - Tt_exit) / Tt_in   [-]  (dimensionless energy function)
+// Generates a 2D turbine map file with NC_UNITS RPM.
+// Axes: DhT [-] vs Nc [RPM corrected]
 //
-// NOTE: DhT [-] is NOT the same as dHt [J/kg] used in Turbine.cpp.
-//
-// Design DhT computed from:
-//   Tt_exit_d = Tt_in_d - eff_d * Tt_in_d * (1 - (1/PR_d)^((gamma-1)/gamma))
-//   DhT_d     = Cp_d * (Tt_in_d - Tt_exit_d) / Tt_in_d
-//
-// Speed lines span DhT = 0.50*DhT_d to 1.30*DhT_d.
-// Turbine PR is nearly independent of Nc — slight variation modelled.
-// Efficiency peaks near design DhT.
+// @param Nc_design  Design corrected speed [RPM corrected]
 // =========================================================================
 
 static void generateTurbineMap(const std::string& filepath,
@@ -229,7 +222,8 @@ static void generateTurbineMap(const std::string& filepath,
                                 double             PR_d,
                                 double             eff_d,
                                 double             Tt_in_d,
-                                double             Cp_d)
+                                double             Cp_d,
+                                double             Nc_design)
 {
     std::ofstream f(filepath);
     if (!f.is_open())
@@ -240,8 +234,6 @@ static void generateTurbineMap(const std::string& filepath,
 
     f << std::fixed << std::setprecision(4);
 
-    // Compute design DhT from real gas conditions
-    // gamma approximated at turbine inlet (~1.315 for hot combustion products)
     constexpr double gamma_t = 1.315;
     constexpr double exp_t   = (gamma_t - 1.0) / gamma_t;
 
@@ -250,29 +242,29 @@ static void generateTurbineMap(const std::string& filepath,
     const double DhT_d     = Cp_d * (Tt_in_d - Tt_exit_d) / Tt_in_d;
 
     // --- Header ---
-    writeHeader(f, "TURBINE", name);
+    writeHeader(f, "TURBINE", name, "RPM");
     f << "# DhT = Cp*(Tt_in - Tt_exit)/Tt_in [-]\n";
     f << "# NOTE: DhT [-] is NOT the same as dHt [J/kg] in Turbine.cpp\n";
     f << "DESIGN_PT   DhT=" << DhT_d
-      << "  Nc=100.0  PR=" << PR_d
+      << "  Nc=" << std::setprecision(1) << Nc_design
+      << std::setprecision(4)
+      << "  PR=" << PR_d
       << "  eff=" << eff_d << "\n\n";
 
     // --- Speed lines ---
     const std::vector<double> nc_pcts = {70.0, 80.0, 90.0, 95.0, 100.0, 105.0};
     constexpr int N_PTS = 5;
 
-    for (const double Nc : nc_pcts)
+    for (const double pct : nc_pcts)
     {
-        const double nc_frac = Nc / 100.0;
+        const double nc_frac = pct / 100.0;
+        const double Nc_rpm  = Nc_design * nc_frac;
 
-        // Turbine PR — nearly constant with Nc, slight variation
-        const double PR_nc = PR_d * (0.92 + 0.08 * nc_frac);
-
-        // Design DhT at t=0.5 (midpoint) — symmetric range around design
-        const double DhT_min = DhT_d * 0.60;   // midpoint = 0.60 + 0.5*(1.40-0.60) = DhT_d
+        const double PR_nc   = PR_d * (0.92 + 0.08 * nc_frac);
+        const double DhT_min = DhT_d * 0.60;
         const double DhT_max = DhT_d * 1.40;
 
-        f << "SPEED_LINE  Nc=" << std::setprecision(1) << Nc
+        f << "SPEED_LINE  Nc=" << std::setprecision(1) << Nc_rpm
           << std::setprecision(4) << "\n";
 
         for (int k = 0; k < N_PTS; ++k)
@@ -280,13 +272,10 @@ static void generateTurbineMap(const std::string& filepath,
             const double t   = static_cast<double>(k) / (N_PTS - 1);
             const double DhT = DhT_min + t * (DhT_max - DhT_min);
 
-            // PR symmetric around PR_nc at t=0.5 (design DhT)
             const double PR_high = PR_nc * 1.12;
             const double PR_low  = PR_nc * 0.88;
-            // At t=0.5: PR = (PR_high + PR_low)/2 = PR_nc exactly
-            const double PR = PR_high + t * (PR_low - PR_high);
+            const double PR      = PR_high + t * (PR_low - PR_high);
 
-            // Efficiency — peaks near design DhT
             double eff = eff_d * (1.0 - 0.8 * std::pow(DhT/DhT_d - 1.0, 2.0));
             eff = std::min(eff, 0.93);
             eff = std::max(eff, 0.70);
@@ -305,11 +294,7 @@ static void generateTurbineMap(const std::string& filepath,
 }
 
 // =========================================================================
-// generateNozzleMap
-//
-// Generates a 1D nozzle map: Cfg vs NPR.
-// Cfg rises from ~0.94 at NPR=1 to plateau at design Cfg.
-// Uses exponential approach to design value.
+// generateNozzleMap — unchanged from Phase 3
 // =========================================================================
 
 static void generateNozzleMap(const std::string& filepath,
@@ -326,12 +311,10 @@ static void generateNozzleMap(const std::string& filepath,
 
     f << std::fixed << std::setprecision(4);
 
-    // --- Header ---
-    writeHeader(f, "NOZZLE", name);
+    writeHeader(f, "NOZZLE", name, "PERCENT");
     f << "DESIGN_PT   NPR=" << std::setprecision(2) << NPR_d
       << "  Cfg=" << std::setprecision(4) << Cfg_d << "\n\n";
 
-    // NPR points — span from 1.0 to well above design
     const std::vector<double> NPR_pts = {
         1.00, 1.50, 2.00, 2.50, 3.00, 4.00,
         5.00, 6.00, 7.00, 8.00, 10.00, 12.00
@@ -340,8 +323,6 @@ static void generateNozzleMap(const std::string& filepath,
     f << "MAP_1D\n";
     for (const double NPR : NPR_pts)
     {
-        // Cfg rises from low value at NPR=1 to plateau at design Cfg
-        // Sigmoid-like curve: fast rise then plateau
         const double x   = (NPR - 1.0) / (NPR_d - 1.0);
         double Cfg = Cfg_d * (1.0 - 0.06 * std::exp(-3.0 * x));
         Cfg = std::min(Cfg, Cfg_d + 0.002);
@@ -357,10 +338,7 @@ static void generateNozzleMap(const std::string& filepath,
 }
 
 // =========================================================================
-// generateInletMap
-//
-// Generates a 1D inlet map: eta_r vs MN.
-// eta_r = 1.0 at MN=0, drops parabolically to design eta_r at design MN.
+// generateInletMap — unchanged from Phase 3
 // =========================================================================
 
 static void generateInletMap(const std::string& filepath,
@@ -377,12 +355,10 @@ static void generateInletMap(const std::string& filepath,
 
     f << std::fixed;
 
-    // --- Header ---
-    writeHeader(f, "INLET", name);
+    writeHeader(f, "INLET", name, "PERCENT");
     f << "DESIGN_PT   MN=" << std::setprecision(2) << MN_d
       << "  eta_r=" << std::setprecision(4) << eta_r_d << "\n\n";
 
-    // MN points from 0 to just above design MN
     const std::vector<double> MN_pts = {
         0.00, 0.20, 0.30, 0.40, 0.50,
         0.60, 0.70, 0.75, 0.80, 0.85,
@@ -392,7 +368,6 @@ static void generateInletMap(const std::string& filepath,
     f << "MAP_1D\n";
     for (const double MN : MN_pts)
     {
-        // Parabolic drop from 1.0 at MN=0 to eta_r_d at MN=MN_d
         double eta_r = 1.0 - (1.0 - eta_r_d) * std::pow(MN / MN_d, 2.0);
         eta_r = std::min(eta_r, 1.0000);
         eta_r = std::max(eta_r, 0.9000);
@@ -412,104 +387,79 @@ static void generateInletMap(const std::string& filepath,
 
 int main()
 {
-    // Output directory — relative to build directory at runtime
-    // Executable runs from build/, maps/synthetic/ is at ../maps/synthetic/
     const std::string OUT_DIR = "../maps/synthetic/";
 
     std::cout << "========================================\n";
     std::cout << "  generate_maps — Synthetic Map Generator\n";
     std::cout << "========================================\n\n";
-    std::cout << "Output directory: " << OUT_DIR << "\n\n";
+    std::cout << "Output directory: " << OUT_DIR << "\n";
+    std::cout << std::fixed << std::setprecision(1);
+    std::cout << "HP design corrected speed: " << Nc_HP_DESIGN << " RPM\n";
+    std::cout << "LP design corrected speed: " << Nc_LP_DESIGN << " RPM\n\n";
 
-    // -------------------------------------------------------------------------
-    // Fan map
-    // Design: PR=3.5, eff=0.89, Wc_d=60.0 kg/s
-    // No VSV — fans do not use variable stator vanes
-    // -------------------------------------------------------------------------
+    // Fan — LP shaft, Nc_design = Nc_LP_DESIGN
     generateCompressorMap(
         OUT_DIR + "fan.map",
         "Fan",
-        3.5,    // PR_d
-        0.89,   // eff_d
-        60.0,   // Wc_d [kg/s]
-        false,  // has_vsv — fans do not have VSV
-        2.0     // n_PR exponent
+        3.5, 0.89, 60.0,
+        Nc_LP_DESIGN,
+        false, 2.0
     );
 
-    // -------------------------------------------------------------------------
-    // HP Compressor map
-    // Design: PR=8.0, eff=0.87, Wc_d=33.33 kg/s
-    // VSV schedule included — HP compressor uses VSV for stall protection
-    // -------------------------------------------------------------------------
+    // HP Compressor — HP shaft, Nc_design = Nc_HP_DESIGN
     generateCompressorMap(
         OUT_DIR + "hp_compressor.map",
         "HP_Compressor",
-        8.0,    // PR_d
-        0.87,   // eff_d
-        33.33,  // Wc_d [kg/s]
-        true,   // has_vsv
-        2.2     // n_PR exponent — higher than fan, steeper PR-speed relationship
+        8.0, 0.87, 33.33,
+        Nc_HP_DESIGN,
+        true, 2.2
     );
 
-    // -------------------------------------------------------------------------
-    // HP Turbine map
-    // Design: PR=2.363, eff=0.89, Tt_in=1700 K, Cp=1231 J/kg·K
-    // -------------------------------------------------------------------------
+    // HP Turbine — HP shaft
     generateTurbineMap(
         OUT_DIR + "hp_turbine.map",
         "HP_Turbine",
-        2.363,   // PR_d
-        0.89,    // eff_d
-        1700.0,  // Tt_in_d [K]
-        1231.0   // Cp_d [J/kg·K] — real gas value at Tt4
+        2.363, 0.89, 1700.0, 1231.0,
+        Nc_HP_DESIGN
     );
 
-    // -------------------------------------------------------------------------
-    // LP Turbine map
-    // Design: PR=1.880, eff=0.89, Tt_in=1425 K, Cp=1203 J/kg·K
-    // -------------------------------------------------------------------------
+    // LP Turbine — LP shaft
     generateTurbineMap(
         OUT_DIR + "lp_turbine.map",
         "LP_Turbine",
-        1.880,   // PR_d
-        0.89,    // eff_d
-        1425.0,  // Tt_in_d [K]
-        1203.0   // Cp_d [J/kg·K] — real gas value at HP turbine exit
+        1.880, 0.89, 1425.0, 1203.0,
+        Nc_LP_DESIGN
     );
 
     // -------------------------------------------------------------------------
-    // Core nozzle map
-    // Design: NPR=6.53, Cfg=0.98
+    // Turbojet HP Compressor map
     // -------------------------------------------------------------------------
-    generateNozzleMap(
-        OUT_DIR + "nozzle.map",
-        "Core_Nozzle",
-        6.53,   // NPR_d
-        0.98    // Cfg_d
+    // Design: PR=10.0, eff=0.87
+    // Wc_d = W * sqrt(Tt_in/288.15) / (Pt_in/101325)
+    //      = 20 * sqrt(250.4/288.15) / (37090/101325)
+    //      = 20 * 0.9328 / 0.3661 = 50.96 kg/s corrected
+    generateCompressorMap(
+        OUT_DIR + "turbojet_compressor.map",
+        "TJ_HP_Compressor",
+        10.0, 0.87, 50.96,
+        Nc_HP_DESIGN,
+        true, 2.2
     );
 
     // -------------------------------------------------------------------------
-    // Fan nozzle map
-    // Design: NPR=3.50, Cfg=0.98
-    // Bypass nozzle — lower NPR than core nozzle at design
+    // Turbojet HP Turbine map
     // -------------------------------------------------------------------------
-    generateNozzleMap(
-        OUT_DIR + "fan_nozzle.map",
-        "Fan_Nozzle",
-        3.50,   // NPR_d
-        0.98    // Cfg_d
+    // Design: PR=2.246 (from Phase 2 real gas solver), eff=0.89
+    // Tt_in=1400 K, Cp=1199.66 J/kg·K (from Phase 2 station 4 output)
+    generateTurbineMap(
+        OUT_DIR + "turbojet_hp_turbine.map",
+        "TJ_HP_Turbine",
+        2.246, 0.89, 1400.0, 1199.66,
+        Nc_HP_DESIGN
     );
-
-    // -------------------------------------------------------------------------
-    // Inlet map
-    // Design: MN=0.85, eta_r=0.97
-    // -------------------------------------------------------------------------
-    generateInletMap(
-        OUT_DIR + "inlet.map",
-        "Flight_Inlet",
-        0.85,   // MN_d
-        0.97    // eta_r_d
-    );
+    
+    generateNozzleMap(OUT_DIR + "fan_nozzle.map", "Fan_Nozzle",  3.50, 0.98);
+    generateInletMap (OUT_DIR + "inlet.map",      "Flight_Inlet", 0.85, 0.97);
 
     std::cout << "\n========================================\n";
     std::cout << "  All map files written successfully\n";
