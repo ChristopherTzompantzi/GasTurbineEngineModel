@@ -31,6 +31,7 @@
  *   TC6 — Extrapolation clamping below and above map range
  *   TC7 — VSV schedule interpolation at part speed
  *   TC8 — Surge line lookup and surge margin
+ *   TC9 — IGV schedule interpolation on fan map
  *
  * PASS/FAIL CRITERIA:
  *   All tolerances are documented inline and account for the fact
@@ -580,6 +581,64 @@ void runTC8()
 }
 
 // =========================================================================
+// TC9 — IGV schedule interpolation on fan map
+// =========================================================================
+/*
+ * OBJECTIVE:
+ *   Verify that the fan IGV schedule is parsed and interpolated correctly.
+ *   IGV_SCHEDULE is treated identically to VSV_SCHEDULE in MapReader —
+ *   both populate vsv_schedule and both are returned via vsv_angle in
+ *   CompressorMapResult.
+ *
+ *   REQUIREMENT: IGV angle at Nc=85% is between -5.0 and -2.5 deg
+ *   Schedule: angle=-5.0 at 80% (6865.5 RPM), angle=-2.5 at 90% (7723.7 RPM)
+ *   At 85% midpoint: t=0.5 → angle = -5.0 + 0.5*(-2.5-(-5.0)) = -3.75 deg
+ *
+ *   REQUIREMENT: IGV angle at Nc=100% (design) == 0.0 deg
+ *
+ *   Tolerance: ±1.0 deg on interpolated angle.
+ */
+void runTC9()
+{
+    printCaseHeader(9, "IGV schedule interpolation on fan map");
+
+    // --- INPUTS ---
+    constexpr double Wc_d_fan  = 60.00;    // Fan design Wc [kg/s]
+    constexpr double Nc_design = 8581.9;   // Fan design corrected speed [RPM]
+    constexpr double tol_angle =    1.0;   // [deg]
+
+    // Part speed: 85% of design = 0.85 * 8581.9 = 7294.6 RPM corrected
+    // IGV schedule: angle=-5.0 at 80% (6865.5 RPM), angle=-2.5 at 90% (7723.7 RPM)
+    // At 85% midpoint: t=0.5 → angle = -5.0 + 0.5*(-2.5-(-5.0)) = -3.75 deg
+    constexpr double Nc_part        = 0.85 * Nc_design;
+    constexpr double expected_part  = -3.75;
+    constexpr double expected_design =  0.0;
+
+    // --- ACTIONS ---
+    CompressorMap fan_map(MAP_DIR + "fan.map");
+
+    if (!fan_map.isLoaded()) {
+        std::cerr << "  [FAIL] fan.map — map not loaded\n";
+        ++g_tests_run; ++g_tests_failed;
+        return;
+    }
+
+    const CompressorMapResult res_part   = fan_map.lookup(Wc_d_fan, Nc_part);
+    const CompressorMapResult res_design = fan_map.lookup(Wc_d_fan, Nc_design);
+
+    const double angle_err_part   = std::abs(res_part.vsv_angle   - expected_part);
+    const double angle_err_design = std::abs(res_design.vsv_angle - expected_design);
+
+    // --- EXPECTED RESULTS ---
+    reportCheck("IGV angle at Nc=85% (~7295 RPM, ~-3.75 deg)",
+                angle_err_part < tol_angle, res_part.vsv_angle,
+                "within 1.0 deg of -3.75");
+    reportCheck("IGV angle at Nc=100% (8582 RPM, 0.0 deg)",
+                angle_err_design < tol_angle, res_design.vsv_angle,
+                "within 1.0 deg of 0.0");
+}
+
+// =========================================================================
 // MAIN
 // =========================================================================
 
@@ -599,6 +658,7 @@ int main()
     runTC6();
     runTC7();
     runTC8();
+    runTC9();
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: "
