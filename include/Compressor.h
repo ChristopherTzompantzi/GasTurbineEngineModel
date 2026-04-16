@@ -49,8 +49,13 @@
  *   eff = 1.0 → perfect isentropic compression (no losses).
  *   Typical range: 0.85–0.92 for modern compressors.
  *
- * FUTURE WORK:
- *   Polytropic efficiency as alternative input mode.
+ * POLYTROPIC EFFICIENCY (Phase 5.2):
+ *   eta_poly is a diagnostic output computed after each map lookup.
+ *   It does not drive thermodynamics — isentropic efficiency is used
+ *   internally throughout. This matches NPSS eff_poly output behaviour.
+ *   Formula (perfect gas approximation, Mattingly Ch.5):
+ *     eta_poly = ln(PR) * (γ-1)/γ
+ *              / ln(1 + (PR^((γ-1)/γ) - 1) / eta_is)
  *
  * UNITS:
  *   PR   [-]
@@ -109,16 +114,27 @@ public:
     double dHt         = 0.0;
 
     // Corrected mass flow [kg/s] — available after compute()
-    double Wc          = 0.0;
+    double Wc           = 0.0;
 
     // Corrected speed [RPM corrected] — available after compute()
-    double Nc          = 0.0;
+    double Nc           = 0.0;
 
     // Surge margin [%] — available after compute() if map with surge line loaded
     // SM = (PR_surge(Wc) - PR_operating) / PR_surge(Wc) * 100
     // 0.0 if no surge line present in map file
     double surge_margin = 0.0;
 
+    // Polytropic efficiency [-] — available after compute()
+    // Diagnostic output — does not drive thermodynamics (isentropic internally)
+    // eta_poly > eta_is for compressor — gap increases with PR
+    // Formula: ln(PR) * (γ-1)/γ / ln(1 + (PR^((γ-1)/γ) - 1) / eta_is)
+    // Reference: Mattingly Ch.5, Walsh & Fletcher Ch.3, NPSS eff_poly output
+    double eta_poly     = 0.0;
+
+    // Isentropic efficiency [-] — current operating value after compute()
+    // Same as eff from map lookup, stored for output alongside eta_poly
+    double eff_is = 0.0;
+    
 private:
 
     // =========================================================================

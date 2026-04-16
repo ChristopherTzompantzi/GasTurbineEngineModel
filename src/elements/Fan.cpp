@@ -108,10 +108,20 @@ void Fan::compute() noexcept
     // Store corrected flow and speed for external inspection
     this->Wc = Wc;
     this->Nc = Nc;
+    this->eff_is = eff_f;
 
     // Step 5 — Real gas properties at inlet conditions
     const double gamma = Thermo::getGamma(Tt_in, flowIn.FAR);
     const double Cp    = Thermo::getCp   (Tt_in, flowIn.FAR);
+
+    // Compute polytropic efficiency — diagnostic output only
+    if (PR_f > 1.0 + 1.0e-6 && eff_f > 1.0e-6)
+    {
+        const double exponent = (gamma - 1.0) / gamma;
+        const double pr_exp   = std::pow(PR_f, exponent);
+        eta_poly = std::log(PR_f) * exponent
+                 / std::log(1.0 + (pr_exp - 1.0) / eff_f);
+    }
 
     // Step 6 — Exit total pressure
     flowOut.Pt = Pt_in * PR_f;

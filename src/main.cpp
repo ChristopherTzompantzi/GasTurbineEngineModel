@@ -273,6 +273,11 @@ int main(int argc, char* argv[])
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "  Compressor surge margin : "
                   << compressor.surge_margin << " %\n";
+        std::cout << std::setprecision(4);
+        std::cout << "  Compressor eta_is       : "
+                  << compressor.eff_is  << "\n";
+        std::cout << "  Compressor eta_poly     : "
+                  << compressor.eta_poly << "\n";
         std::cout << "========================================\n";
     }
 
@@ -556,7 +561,16 @@ int main(int argc, char* argv[])
         std::cout << "  HP Compressor surge margin : "
                   << tf_compressor.surge_margin << " %\n";
         std::cout << "  Fan surge margin           : "
-                  << tf_fan.surge_margin << " %\n\n";
+                  << tf_fan.surge_margin        << " %\n";
+        std::cout << std::setprecision(4);
+        std::cout << "  HP Compressor eta_is       : "
+                  << tf_compressor.eff_is  << "\n";
+        std::cout << "  HP Compressor eta_poly     : "
+                  << tf_compressor.eta_poly << "\n";
+        std::cout << "  Fan eta_is                 : "
+                  << tf_fan.eff_is   << "\n";
+        std::cout << "  Fan eta_poly               : "
+                  << tf_fan.eta_poly  << "\n\n";
 
         // LP shaft — manual power balance (mixed mass flow bases)
         // Physical power [W] = specific work [J/kg] × mass flow [kg/s]

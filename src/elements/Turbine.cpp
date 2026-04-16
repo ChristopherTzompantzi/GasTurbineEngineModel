@@ -113,6 +113,19 @@ void Turbine::compute() noexcept
     // Update public PR_t to reflect current operating value
     PR_t = PR_t_use;
 
+    // Compute polytropic efficiency — diagnostic output only
+    // eta_poly = ln(1 - eta_is*(1-(1/PR)^exp)) / (-exp * ln(PR))
+    // eta_poly < eta_is for turbine (opposite direction to compressor)
+    // Reference: Mattingly Ch.5 — small-stage efficiency derivation
+    if (PR_t_use > 1.0 + 1.0e-6 && eff_t_use > 1.0e-6)
+    {
+        const double exponent  = (gamma - 1.0) / gamma;
+        const double pr_exp    = std::pow(1.0 / PR_t_use, exponent);
+        const double inner     = 1.0 - eff_t_use * (1.0 - pr_exp);
+        if (inner > 1.0e-6)
+            eta_poly = std::log(inner) / (-exponent * std::log(PR_t_use));
+    }
+
     // Step 7 — Recompute Tt_exit with final PR_t and eff_t
     const double Tt_ideal = Tt_in * std::pow(1.0 / PR_t_use, exponent);
     flowOut.Tt = Tt_in - eff_t_use * (Tt_in - Tt_ideal);

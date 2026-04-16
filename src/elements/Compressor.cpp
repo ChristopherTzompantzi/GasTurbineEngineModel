@@ -108,10 +108,22 @@ void Compressor::compute() noexcept
     // Store corrected flow and speed for external inspection
     this->Wc = Wc;
     this->Nc = Nc;
+    this->eff_is = eff;
 
     // Step 5 — Real gas properties at inlet conditions
     const double gamma = Thermo::getGamma(Tt_in, flowIn.FAR);
     const double Cp    = Thermo::getCp   (Tt_in, flowIn.FAR);
+    
+    // Compute polytropic efficiency — diagnostic output, does not affect thermodynamics
+    // eta_poly = ln(PR) * (γ-1)/γ / ln(1 + (PR^((γ-1)/γ) - 1) / eff)
+    // Valid only when PR > 1 and eff > 0
+    if (PR > 1.0 + 1.0e-6 && eff > 1.0e-6)
+    {
+        const double exp      = (gamma - 1.0) / gamma;
+        const double pr_exp   = std::pow(PR, exp);
+        eta_poly = std::log(PR) * exp
+                 / std::log(1.0 + (pr_exp - 1.0) / eff);
+    }
 
     // Step 6 — Exit total pressure
     flowOut.Pt = Pt_in * PR;
