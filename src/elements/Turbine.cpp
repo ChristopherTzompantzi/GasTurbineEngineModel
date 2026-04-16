@@ -16,21 +16,21 @@
  * 5. Compute DhT from initial Tt_exit — map lookup x-axis
  * 6. Get PR_t and eff_t — from map lookup at (DhT, Nc) if map loaded,
  *    else fixed fallback values
- * 7. Recompute Tt_exit with final PR_t and eff_t
- * 8. Compute exit total pressure — Pt_exit = Pt_inlet / PR_t
- * 9. Compute dHt — specific work extracted [J/kg]
- * 10. Pass W, MN, FAR through unchanged
- * 11. Write real gas Cp and gamma to flowOut via Thermo at exit conditions
+ * 7. Apply tip clearance correction to eff_t:
+ *      eff_t_corrected = eff_t_map * (1 - clearance_corr_)
+ *    Store corrected value in eff_is for external inspection.
+ * 8. Compute polytropic efficiency from corrected eff_t
+ * 9. Recompute Tt_exit with final PR_t and corrected eff_t
+ * 10. Compute exit total pressure — Pt_exit = Pt_inlet / PR_t
+ * 11. Compute dHt — specific work extracted [J/kg]
+ * 12. Pass W, MN, FAR through unchanged
+ * 13. Write real gas Cp and gamma to flowOut via Thermo at exit conditions
  *
- * PR_T AND EFF_T SOURCE:
- *   Shaft + map → TurbineMap::lookup(DhT, Nc)        [Nc from shaft N_rpm]
- *   Map only    → TurbineMap::lookup(DhT, Nc_design)  [design Nc from header]
- *   No map      → fixed PR_t_ and eff_t_ from constructor / setPR()
- *
- * DhT COMPUTATION:
- *   DhT = Cp * (Tt_in - Tt_exit_0) / Tt_in  [-]
- *   Tt_exit_0 estimated from fallback PR_t_ and eff_t_.
- *   At design speed the map returns design values exactly.
+ * TIP CLEARANCE CORRECTION:
+ *   eff_t_corrected = eff_t_map * (1 - clearance_corr_)
+ *   Mirrors NPSS TipClearance subelement delta_eff correction.
+ *   clearance_corr_ = 0.0 → no change (backward compatible default).
+ *   Reference: Walsh & Fletcher Ch.5 — clearance effect on turbine efficiency.
  */
 
 static constexpr double T_REF = 288.15;    // ISA sea level temperature [K]
@@ -39,17 +39,16 @@ static constexpr double T_REF = 288.15;    // ISA sea level temperature [K]
 // Constructor
 // =========================================================================
 
-Turbine::Turbine(double PR_t, double eff_t) noexcept
-    : PR_t_ (PR_t)
-    , eff_t_(eff_t)
+Turbine::Turbine(double PR_t,
+                 double eff_t,
+                 double clearance_corr) noexcept
+    : PR_t_          (PR_t)
+    , eff_t_         (eff_t)
+    , clearance_corr_(clearance_corr)
 {}
 
 // =========================================================================
 // loadMap
-//
-// Loads a TurbineMap from file. Mirrors NPSS S_map subelement pattern.
-// On success: compute() uses map lookup for PR_t and eff_t.
-// On failure: falls back to fixed PR_t_ and eff_t_ with a warning.
 // =========================================================================
 
 void Turbine::loadMap(const std::string& filepath)
@@ -67,8 +66,6 @@ void Turbine::loadMap(const std::string& filepath)
 
 // =========================================================================
 // compute
-//
-// Performs turbine thermodynamics. Called once per solver iteration.
 // =========================================================================
 
 void Turbine::compute() noexcept
@@ -78,13 +75,11 @@ void Turbine::compute() noexcept
     const double Tt_in = flowIn.Tt;
 
     // Step 2 — Real gas properties at inlet conditions
-    const double gamma = Thermo::getGamma(Tt_in, flowIn.FAR);
-    const double Cp    = Thermo::getCp   (Tt_in, flowIn.FAR);
+    const double gamma    = Thermo::getGamma(Tt_in, flowIn.FAR);
+    const double Cp       = Thermo::getCp   (Tt_in, flowIn.FAR);
     const double exponent = (gamma - 1.0) / gamma;
 
     // Step 3 — Compute corrected speed from shaft
-    // Nc = N_rpm / sqrt(Tt_in / T_ref)   [RPM corrected]
-    // No shaft → use design Nc from map header (design point operation)
     double Nc = 0.0;
     if (shaft_ != nullptr)
         Nc = shaft_->getSpeed() / std::sqrt(Tt_in / T_REF);
@@ -96,7 +91,6 @@ void Turbine::compute() noexcept
     const double Tt_exit_0  = Tt_in - eff_t_ * (Tt_in - Tt_ideal_0);
 
     // Step 5 — Compute DhT for map lookup
-    // DhT = Cp * (Tt_in - Tt_exit) / Tt_in  [-]
     const double DhT = Cp * (Tt_in - Tt_exit_0) / Tt_in;
 
     // Step 6 — Get PR_t and eff_t from map or fallback
@@ -113,35 +107,41 @@ void Turbine::compute() noexcept
     // Update public PR_t to reflect current operating value
     PR_t = PR_t_use;
 
-    // Compute polytropic efficiency — diagnostic output only
-    // eta_poly = ln(1 - eta_is*(1-(1/PR)^exp)) / (-exp * ln(PR))
-    // eta_poly < eta_is for turbine (opposite direction to compressor)
-    // Reference: Mattingly Ch.5 — small-stage efficiency derivation
+    // Step 7 — Apply tip clearance correction
+    // eff_t_corrected = eff_t_map * (1 - clearance_corr_)
+    // clearance_corr_ = 0.0 → no change (default, backward compatible)
+    // Mirrors NPSS TipClearance subelement delta_eff correction.
+    // Reference: Walsh & Fletcher Ch.5
+    eff_t_use *= (1.0 - clearance_corr_);
+
+    // Store corrected isentropic efficiency for external inspection
+    eff_is = eff_t_use;
+
+    // Step 8 — Compute polytropic efficiency from corrected eff_t
     if (PR_t_use > 1.0 + 1.0e-6 && eff_t_use > 1.0e-6)
     {
-        const double exponent  = (gamma - 1.0) / gamma;
-        const double pr_exp    = std::pow(1.0 / PR_t_use, exponent);
-        const double inner     = 1.0 - eff_t_use * (1.0 - pr_exp);
+        const double pr_exp = std::pow(1.0 / PR_t_use, exponent);
+        const double inner  = 1.0 - eff_t_use * (1.0 - pr_exp);
         if (inner > 1.0e-6)
             eta_poly = std::log(inner) / (-exponent * std::log(PR_t_use));
     }
 
-    // Step 7 — Recompute Tt_exit with final PR_t and eff_t
+    // Step 9 — Recompute Tt_exit with final PR_t and corrected eff_t
     const double Tt_ideal = Tt_in * std::pow(1.0 / PR_t_use, exponent);
     flowOut.Tt = Tt_in - eff_t_use * (Tt_in - Tt_ideal);
 
-    // Step 8 — Exit total pressure
+    // Step 10 — Exit total pressure
     flowOut.Pt = Pt_in / PR_t_use;
 
-    // Step 9 — Specific work extracted [J/kg]
+    // Step 11 — Specific work extracted [J/kg]
     dHt = Cp * (Tt_in - flowOut.Tt);
 
-    // Step 10 — Pass remaining properties through unchanged
+    // Step 12 — Pass remaining properties through unchanged
     flowOut.W   = flowIn.W;
     flowOut.MN  = flowIn.MN;
     flowOut.FAR = flowIn.FAR;
 
-    // Step 11 — Real gas Cp and gamma at exit conditions
+    // Step 13 — Real gas Cp and gamma at exit conditions
     flowOut.Cp    = Thermo::getCp   (flowOut.Tt, flowOut.FAR);
     flowOut.gamma = Thermo::getGamma(flowOut.Tt, flowOut.FAR);
 }

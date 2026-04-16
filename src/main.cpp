@@ -151,7 +151,9 @@ int main(int argc, char* argv[])
 
         // Turbine — initial guess PR_t = 2.286 (from perfect gas derivation)
         // The Newton-Raphson solver will find the real gas balanced value
-        Turbine    turbine(2.286, 0.89);
+        // clearance_corr=0.005 — 0.5% penalty, HP turbine cruise with ACC
+        // Reference: Walsh & Fletcher Ch.5
+        Turbine    turbine(2.286, 0.89, 0.005);
         Nozzle     nozzle(altitude_m, 0.98);
 
         // Load performance maps — NPSS S_map subelement pattern
@@ -275,9 +277,15 @@ int main(int argc, char* argv[])
                   << compressor.surge_margin << " %\n";
         std::cout << std::setprecision(4);
         std::cout << "  Compressor eta_is       : "
-                  << compressor.eff_is  << "\n";
+                  << compressor.eff_is   << "\n";
         std::cout << "  Compressor eta_poly     : "
-                  << compressor.eta_poly << "\n";
+                  << compressor.eta_poly  << "\n";
+        std::cout << "  Turbine    eta_is       : "
+                  << turbine.eff_is      << "\n";
+        std::cout << "  Turbine    eta_poly     : "
+                  << turbine.eta_poly     << "\n";
+        std::cout << "  Turbine    clearance    : "
+                  << std::setprecision(3) << 0.5 << " %\n";
         std::cout << "========================================\n";
     }
 
@@ -339,8 +347,8 @@ int main(int argc, char* argv[])
         // Turbines constructed with initial guess PRs.
         // The Newton-Raphson solver will find the converged values via setPR().
         // Initial guesses are from the Phase 1b analytical derivation.
-        Turbine    tf_turbine_hp(2.4186, 0.89);   // initial guess — solver will refine
-        Turbine    tf_turbine_lp(1.9663, 0.89);   // initial guess — solver will refine
+        Turbine    tf_turbine_hp(2.4186, 0.89, 0.005);  // 0.5% clearance penalty — HP cruise
+        Turbine    tf_turbine_lp(1.9663, 0.89, 0.003);  // 0.3% clearance penalty — LP cruise
 
         Afterburner tf_afterburner(2100.0);
         Nozzle      tf_nozzle(altitude_m, 0.98);
@@ -568,9 +576,22 @@ int main(int argc, char* argv[])
         std::cout << "  HP Compressor eta_poly     : "
                   << tf_compressor.eta_poly << "\n";
         std::cout << "  Fan eta_is                 : "
-                  << tf_fan.eff_is   << "\n";
+                  << tf_fan.eff_is         << "\n";
         std::cout << "  Fan eta_poly               : "
-                  << tf_fan.eta_poly  << "\n\n";
+                  << tf_fan.eta_poly        << "\n";
+        std::cout << "  HP Turbine eta_is          : "
+                  << tf_turbine_hp.eff_is   << "\n";
+        std::cout << "  HP Turbine eta_poly        : "
+                  << tf_turbine_hp.eta_poly << "\n";
+        std::cout << "  HP Turbine clearance       : "
+                  << std::setprecision(3) << 0.5 << " %\n";
+        std::cout << "  LP Turbine eta_is          : "
+                  << std::setprecision(4)
+                  << tf_turbine_lp.eff_is   << "\n";
+        std::cout << "  LP Turbine eta_poly        : "
+                  << tf_turbine_lp.eta_poly << "\n";
+        std::cout << "  LP Turbine clearance       : "
+                  << std::setprecision(3) << 0.3 << " %\n\n";
 
         // LP shaft — manual power balance (mixed mass flow bases)
         // Physical power [W] = specific work [J/kg] × mass flow [kg/s]
