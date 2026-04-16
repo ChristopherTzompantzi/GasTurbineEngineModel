@@ -125,6 +125,13 @@ public:
     // Current turbine pressure ratio [-] — updated by compute()
     double PR_t = 1.0;
 
+    // Polytropic efficiency [-] — available after compute()
+    // Diagnostic output — does not drive thermodynamics (isentropic internally)
+    // eta_poly < eta_is for turbine — reheat factor effect
+    // Formula: ln(1 - eta_is*(1-(1/PR)^((γ-1)/γ))) / (-(γ-1)/γ * ln(PR))
+    // Reference: Mattingly Ch.5, Walsh & Fletcher Ch.3
+    double eta_poly = 0.0;
+
 private:
 
     // =========================================================================

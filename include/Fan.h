@@ -117,6 +117,16 @@ public:
     // 0.0 if no surge line present in map file
     double surge_margin = 0.0;
 
+    // Polytropic efficiency [-] — available after compute()
+    // Diagnostic output — does not drive thermodynamics (isentropic internally)
+    // eta_poly > eta_is for fan — gap increases with fan PR
+    // Formula: ln(PR) * (γ-1)/γ / ln(1 + (PR^((γ-1)/γ) - 1) / eta_is)
+    double eta_poly     = 0.0;
+
+    // Isentropic efficiency [-] — current operating value after compute()
+    // Stored for output alongside eta_poly
+    double eff_is       = 0.0;
+    
 private:
 
     // =========================================================================
