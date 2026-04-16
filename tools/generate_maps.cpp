@@ -151,6 +151,7 @@ static void generateCompressorMap(const std::string& filepath,
                                    double             Wc_d,
                                    double             Nc_design,
                                    bool               has_vsv,
+                                   bool               has_igv,
                                    double             n_PR)
 {
     std::ofstream f(filepath);
@@ -196,6 +197,34 @@ static void generateCompressorMap(const std::string& filepath,
               << std::noshowpos << "\n";
         }
         f << "END_VSV_SCHEDULE\n\n";
+    }
+
+    // --- IGV schedule (fan only) ---
+    // IGV closes at part speed to protect fan from stall.
+    // Less aggressive than compressor VSV — fan blade angles are larger
+    // and more tolerant of incidence variation.
+    // Schedule: 0 deg at design, closing to -10 deg at 70% speed.
+    // Reference: Walsh & Fletcher Ch.8 — fan IGV scheduling.
+    if (has_igv)
+    {
+        const std::vector<std::pair<double,double>> igv_pcts = {
+            { 70.0, -10.0},
+            { 80.0,  -5.0},
+            { 90.0,  -2.5},
+            { 95.0,  -1.0},
+            {100.0,   0.0},
+            {105.0,   0.0},
+        };
+
+        f << "IGV_SCHEDULE\n";
+        for (const auto& pt : igv_pcts)
+        {
+            const double Nc_rpm = Nc_design * pt.first / 100.0;
+            f << "  Nc=" << std::setprecision(1) << Nc_rpm
+              << "  angle=" << std::showpos << pt.second
+              << std::noshowpos << "\n";
+        }
+        f << "END_IGV_SCHEDULE\n\n";
     }
 
     // --- Phase 5: Surge line ---
@@ -468,16 +497,19 @@ int main()
     std::cout << "HP design corrected speed: " << Nc_HP_DESIGN << " RPM\n";
     std::cout << "LP design corrected speed: " << Nc_LP_DESIGN << " RPM\n\n";
 
-    // Fan — LP shaft
+    // Fan — LP shaft, IGV schedule included (Phase 5.1)
     generateCompressorMap(
         OUT_DIR + "fan.map", "Fan",
-        3.5, 0.89, 60.0, Nc_LP_DESIGN, false, 2.0
+        3.5, 0.89, 60.0, Nc_LP_DESIGN,
+        false,   // has_vsv — fans use IGV not VSV
+        true,    // has_igv — Phase 5.1
+        2.0
     );
 
     // HP Compressor — HP shaft
     generateCompressorMap(
         OUT_DIR + "hp_compressor.map", "HP_Compressor",
-        8.0, 0.87, 33.33, Nc_HP_DESIGN, true, 2.2
+        8.0, 0.87, 33.33, Nc_HP_DESIGN, true, false, 2.2
     );
 
     // HP Turbine — HP shaft
@@ -496,7 +528,7 @@ int main()
     // Wc_d = 20 * sqrt(250.4/288.15) / (37090/101325) = 50.96 kg/s corrected
     generateCompressorMap(
         OUT_DIR + "turbojet_compressor.map", "TJ_HP_Compressor",
-        10.0, 0.87, 50.96, Nc_HP_DESIGN, true, 2.2
+        10.0, 0.87, 50.96, Nc_HP_DESIGN, true, false, 2.2
     );
 
     // Turbojet HP Turbine

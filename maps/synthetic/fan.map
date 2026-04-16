@@ -19,6 +19,15 @@ SCALE_NC    1.000
 
 DESIGN_PT   Wc=60.000  Nc=8581.9  PR=3.500  eff=0.890
 
+IGV_SCHEDULE
+  Nc=6007.3  angle=-10.0
+  Nc=6865.5  angle=-5.0
+  Nc=7723.7  angle=-2.5
+  Nc=8152.8  angle=-1.0
+  Nc=8581.9  angle=+0.0
+  Nc=9011.0  angle=+0.0
+END_IGV_SCHEDULE
+
 # Surge line — synthetic, 12% above near-stall PR at each speed
 # Source: Mattingly App D topology, scaled to design point
 SURGE_LINE
