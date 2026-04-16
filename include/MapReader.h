@@ -17,9 +17,10 @@
  *   MapReader needs updating — not each individual map class.
  *
  * SUPPORTED MAP TYPES:
- *   COMPRESSOR — 2D map: speed lines of (Wc, PR, eff) vs Nc%
- *                        with optional VSV schedule
- *   TURBINE    — 2D map: speed lines of (DhT, PR, eff) vs Nc%
+ *   COMPRESSOR — 2D map: speed lines of (Wc, PR, eff) vs Nc
+ *                        with optional VSV/IGV schedule
+ *                        with optional SURGE_LINE block
+ *   TURBINE    — 2D map: speed lines of (DhT, PR, eff) vs Nc
  *                        DhT = Cp*(Tt_in - Tt_exit)/Tt_in [-]
  *   NOZZLE     — 1D map: Cfg vs NPR
  *   INLET      — 1D map: eta_r vs MN
@@ -32,21 +33,57 @@
  *     NAME        component identifier
  *     NC_UNITS    PERCENT | RPM
  *     SOURCE      data provenance description
+ *     SCALE_PR    1.0        (optional, default 1.0)
+ *     SCALE_EFF   1.0        (optional, default 1.0)
+ *     SCALE_WC    1.0        (optional, default 1.0)
+ *     SCALE_NC    1.0        (optional, default 1.0)
  *     DESIGN_PT   type-specific design point fields
  *     VSV_SCHEDULE ... END_VSV_SCHEDULE   (COMPRESSOR only)
+ *     IGV_SCHEDULE ... END_IGV_SCHEDULE   (FAN — alias for VSV_SCHEDULE)
+ *     SURGE_LINE   ... END_SURGE_LINE     (COMPRESSOR, FAN)
  *     SPEED_LINE Nc=X ... END_SPEED_LINE  (COMPRESSOR, TURBINE)
  *     MAP_1D     ... END_MAP_1D           (NOZZLE, INLET)
+ *
+ * MAP SCALING (Phase 5 — Kurzke-Riegler method):
+ *   Scale factors shift a generic reference map to match a specific
+ *   engine design point. Applied at lookup time in CompressorMap
+ *   and TurbineMap. All default to 1.0 — no effect when absent.
+ *
+ *   Compressor/Fan at lookup:
+ *     Wc_query   = Wc / SCALE_WC
+ *     Nc_query   = Nc / SCALE_NC
+ *     PR_actual  = 1.0 + (PR_ref - 1.0) * SCALE_PR
+ *     eff_actual = eff_ref * SCALE_EFF
+ *
+ *   Turbine at lookup:
+ *     DhT_query  = DhT / SCALE_WC    (same axis as Wc for turbine)
+ *     Nc_query   = Nc  / SCALE_NC
+ *     PR_actual  = 1.0 + (PR_ref - 1.0) * SCALE_PR
+ *     eff_actual = eff_ref * SCALE_EFF
+ *
+ * SURGE LINE (Phase 5):
+ *   SURGE_LINE block stores (Wc_surge, PR_surge) pairs defining the
+ *   surge boundary. CompressorMap interpolates PR_surge at any Wc to
+ *   compute surge margin:
+ *     SM = (PR_surge(Wc) - PR_operating) / PR_surge(Wc) * 100  [%]
  *
  * NPSS ALIGNMENT:
  *   Matches NPSS convention — map data is stored in external files,
  *   parsed at construction time, and cached in memory for fast lookup.
- *   NC_UNITS PERCENT is used for Phase 3 (design point analysis).
- *   NC_UNITS RPM will be used in Phase 4 (off-design with shaft speeds).
+ *
+ * REFERENCES (Phase 5.0 — Map Scaling):
+ *   Kurzke, J. and Riegler, C., "A New Compressor Map Scaling Procedure
+ *   for Preliminary Conceptional Design of Gas Turbines," ASME Turbo
+ *   Expo 2000, Paper No. 2000-GT-0006. [Primary scaling method]
+ *   Walsh, P.P. and Fletcher, P., "Gas Turbine Performance," 2nd ed.,
+ *   Blackwell/ASME Press, 2004. Ch. 7-8. [Reference maps and surge lines]
+ *   Mattingly, J.D., "Elements of Gas Turbine Propulsion," McGraw-Hill,
+ *   1996. Appendix D. [Compressor map with surge line, PR=10 reference]
  *
  * UNITS:
  *   Wc    [kg/s corrected]
  *   DhT   [-] dimensionless energy function
- *   Nc    [% of design corrected speed] (Phase 3)
+ *   Nc    [RPM corrected] (Phase 4+)
  *   PR    [-]
  *   eff   [-]
  *   NPR   [-]
@@ -82,22 +119,21 @@ struct MapDataPoint {
  * MapSpeedLine — one speed line at constant corrected speed Nc.
  *
  * Contains an ordered sequence of MapDataPoints from low to high x.
- * vsv_angle is interpolated from the VSV schedule at this Nc —
- * 0.0 if no VSV schedule is present.
+ * vsv_angle is interpolated from the VSV/IGV schedule at this Nc —
+ * 0.0 if no schedule is present.
  */
 struct MapSpeedLine {
-    double                   Nc        = 0.0;   // corrected speed [% or RPM]
-    double                   vsv_angle = 0.0;   // VSV angle [deg]
+    double                    Nc        = 0.0;   // corrected speed [RPM]
+    double                    vsv_angle = 0.0;   // VSV/IGV angle [deg]
     std::vector<MapDataPoint> points;            // operating points on this line
 };
 
 /*
  * Map1DPoint — single point on a 1D performance map.
  *
- * For NOZZLE: x = NPR [-], y = Cfg [-]
- * For INLET:  x = MN  [-], y = eta_r [-]
- *             (eta_r is the total-pressure recovery factor,
- *              equivalent to recovery_factor_ in Inlet.cpp)
+ * For NOZZLE:     x = NPR [-],      y = Cfg [-]
+ * For INLET:      x = MN  [-],      y = eta_r [-]
+ * For SURGE_LINE: x = Wc  [kg/s],   y = PR_surge [-]
  */
 struct Map1DPoint {
     double x = 0.0;   // independent variable
@@ -117,7 +153,7 @@ struct Map1DPoint {
  *   INLET:      x_design (=MN_d),  y_design (=eta_r_d)
  */
 struct MapDesignPoint {
-    double Nc       = 0.0;   // design corrected speed [% or RPM]
+    double Nc       = 0.0;   // design corrected speed [RPM]
     double x_design = 0.0;   // design Wc, DhT, NPR, or MN
     double PR       = 0.0;   // design pressure ratio [-]
     double eff      = 0.0;   // design isentropic efficiency [-]
@@ -125,14 +161,42 @@ struct MapDesignPoint {
 };
 
 /*
- * VsvPoint — one entry in a VSV (Variable Stator Vane) schedule.
+ * VsvPoint — one entry in a VSV or IGV schedule.
  *
  * Maps corrected speed Nc to stator vane angle. Used by CompressorMap
  * to interpolate vsv_angle onto each MapSpeedLine after loading.
+ * IGV_SCHEDULE (fan) is treated identically to VSV_SCHEDULE.
  */
 struct VsvPoint {
-    double Nc    = 0.0;   // corrected speed [% or RPM]
-    double angle = 0.0;   // VSV angle [deg]
+    double Nc    = 0.0;   // corrected speed [RPM]
+    double angle = 0.0;   // VSV/IGV angle [deg]
+};
+
+/*
+ * MapScaleFactors — Kurzke-Riegler map scaling factors.
+ *
+ * All default to 1.0 — no scaling when absent from file header.
+ * Applied at lookup time in CompressorMap and TurbineMap.
+ *
+ * Reference: Kurzke & Riegler, ASME 2000-GT-0006.
+ *
+ * For compressor/fan:
+ *   Wc_query   = Wc_actual / scale_Wc
+ *   Nc_query   = Nc_actual / scale_Nc
+ *   PR_result  = 1.0 + (PR_ref - 1.0) * scale_PR
+ *   eff_result = eff_ref * scale_Eff
+ *
+ * For turbine (same structure, DhT replaces Wc axis):
+ *   DhT_query  = DhT_actual / scale_Wc
+ *   Nc_query   = Nc_actual  / scale_Nc
+ *   PR_result  = 1.0 + (PR_ref - 1.0) * scale_PR
+ *   eff_result = eff_ref * scale_Eff
+ */
+struct MapScaleFactors {
+    double scale_PR  = 1.0;   // pressure ratio scale [-]
+    double scale_Eff = 1.0;   // efficiency scale [-]
+    double scale_Wc  = 1.0;   // corrected flow scale [-]
+    double scale_Nc  = 1.0;   // corrected speed scale [-]
 };
 
 /*
@@ -141,20 +205,24 @@ struct VsvPoint {
  * Returned by MapReader::read(). The calling map class interprets
  * the contents based on the type field.
  *
- * speed_lines — populated for COMPRESSOR and TURBINE maps
- * map_1d      — populated for NOZZLE and INLET maps
- * vsv_schedule— populated for COMPRESSOR maps with VSV_SCHEDULE block
+ * speed_lines  — populated for COMPRESSOR and TURBINE maps
+ * map_1d       — populated for NOZZLE and INLET maps
+ * vsv_schedule — populated for COMPRESSOR/FAN maps with VSV/IGV block
+ * surge_line   — populated for COMPRESSOR/FAN maps with SURGE_LINE block
+ * scales       — populated from SCALE_* header fields (default 1.0)
  */
 struct MapFileData {
-    std::string              type;          // COMPRESSOR, TURBINE, NOZZLE, INLET
-    std::string              name;          // component identifier
-    std::string              nc_units;      // PERCENT or RPM
-    std::string              source;        // data provenance
-    MapDesignPoint           design_pt;     // design point reference
+    std::string               type;          // COMPRESSOR, TURBINE, NOZZLE, INLET
+    std::string               name;          // component identifier
+    std::string               nc_units;      // PERCENT or RPM
+    std::string               source;        // data provenance
+    MapDesignPoint            design_pt;     // design point reference
+    MapScaleFactors           scales;        // Kurzke-Riegler scale factors
 
     std::vector<MapSpeedLine> speed_lines;   // 2D map data
     std::vector<Map1DPoint>   map_1d;        // 1D map data
-    std::vector<VsvPoint>     vsv_schedule;  // VSV schedule (COMPRESSOR only)
+    std::vector<VsvPoint>     vsv_schedule;  // VSV/IGV schedule
+    std::vector<Map1DPoint>   surge_line;    // surge line: (Wc, PR_surge) pairs
 };
 
 // =========================================================================
@@ -165,48 +233,25 @@ struct MapFileData {
  * read — parses a map file and returns its contents as MapFileData.
  *
  * Reads the file line by line. Strips comments and blank lines.
- * Parses header fields, VSV_SCHEDULE, SPEED_LINE, and MAP_1D blocks.
+ * Parses header fields, VSV_SCHEDULE/IGV_SCHEDULE, SURGE_LINE,
+ * SPEED_LINE, and MAP_1D blocks.
  * Reports errors to stderr with line numbers for easy debugging.
  *
  * @param filepath   Path to the map file (absolute or relative to executable)
  * @return           MapFileData containing all parsed map data.
  *                   On error: returns MapFileData with empty type field.
  *                   Caller should check data.type.empty() for error detection.
- *
- * ERRORS REPORTED TO STDERR:
- *   - File not found
- *   - Missing required header fields (TYPE, NAME, DESIGN_PT)
- *   - Malformed SPEED_LINE or MAP_1D blocks
- *   - Unknown keywords
- *   - Insufficient points on a speed line (minimum 2 required for interpolation)
  */
 MapFileData read(const std::string& filepath);
 
 // =========================================================================
-// INTERNAL HELPERS — not intended for direct use by map classes
+// INTERNAL HELPERS
 // =========================================================================
 
-/*
- * parseLine — splits a line into keyword and value tokens.
- * Strips leading/trailing whitespace. Returns empty vector for
- * comment lines (starting with #) and blank lines.
- */
 std::vector<std::string> parseLine(const std::string& line);
-
-/*
- * parseKeyValue — extracts a double value from a "KEY=VALUE" token.
- * Returns 0.0 and reports error if token is malformed.
- *
- * Example: parseKeyValue("Wc=33.33") returns 33.33
- */
 double parseKeyValue(const std::string& token, const std::string& key);
-
-/*
- * parseDesignPoint — parses the DESIGN_PT header line for each map type.
- * Interprets fields based on the TYPE already parsed from the header.
- */
 MapDesignPoint parseDesignPoint(const std::vector<std::string>& tokens,
-                                const std::string&             /*type*/);
+                                const std::string& /*type*/);
 
 }   // namespace MapReader
 

@@ -102,7 +102,12 @@ void Compressor::compute() noexcept
         const CompressorMapResult res = map_->lookup(Wc, Nc);
         PR  = res.PR;
         eff = res.eff;
+        surge_margin = map_->surgeMargin(Wc, PR);
     }
+
+    // Store corrected flow and speed for external inspection
+    this->Wc = Wc;
+    this->Nc = Nc;
 
     // Step 5 — Real gas properties at inlet conditions
     const double gamma = Thermo::getGamma(Tt_in, flowIn.FAR);

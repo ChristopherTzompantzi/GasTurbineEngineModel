@@ -270,6 +270,9 @@ int main(int argc, char* argv[])
                   << std::setprecision(4) << nozzle.Ath       << " m²\n";
         std::cout << "\n";
         hpShaft.printBalance();
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "  Compressor surge margin : "
+                  << compressor.surge_margin << " %\n";
         std::cout << "========================================\n";
     }
 
@@ -549,6 +552,11 @@ int main(int argc, char* argv[])
                   << std::setprecision(6) << tf_TSFC << " kg/N/s\n\n";
 
         tf_hpShaft.printBalance();
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "  HP Compressor surge margin : "
+                  << tf_compressor.surge_margin << " %\n";
+        std::cout << "  Fan surge margin           : "
+                  << tf_fan.surge_margin << " %\n\n";
 
         // LP shaft — manual power balance (mixed mass flow bases)
         // Physical power [W] = specific work [J/kg] × mass flow [kg/s]
