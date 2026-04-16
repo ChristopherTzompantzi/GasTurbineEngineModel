@@ -18,33 +18,48 @@
  *   x-axis: DhT [-] — dimensionless energy function
  *            DhT = Cp*(Tt_in - Tt_exit) / Tt_in
  *            NOTE: DhT [-] is NOT dHt [J/kg] used in Turbine.cpp
- *   y-axis: Nc  [%] — percent corrected speed
+ *   y-axis: Nc  [RPM corrected]
  *
  * INTERPOLATION — bilinear:
- * 1. Find bounding speed lines by Nc%
- * 2. Linear interpolation along each speed line by DhT → (PR, eff)
- * 3. Linear interpolation between speed lines by Nc% → final (PR, eff)
+ * 1. Apply scale factors to query (DhT, Nc) → reference map space
+ * 2. Find bounding speed lines by Nc_ref
+ * 3. Linear interpolation along each speed line by DhT_ref → (PR_ref, eff_ref)
+ * 4. Linear interpolation between speed lines by Nc_ref → (PR_ref, eff_ref)
+ * 5. Apply scale factors to result → (PR_actual, eff_actual)
+ *
+ * MAP SCALING (Phase 5 — Kurzke-Riegler method):
+ *   Scale factors stored in map file header as SCALE_PR, SCALE_EFF,
+ *   SCALE_WC, SCALE_NC. All default to 1.0 when absent.
+ *
+ *   Query transformation (actual → reference map space):
+ *     DhT_ref = DhT_actual / scale_Wc   (DhT uses same scale as Wc axis)
+ *     Nc_ref  = Nc_actual  / scale_Nc
+ *
+ *   Result transformation (reference → actual engine space):
+ *     PR_actual  = 1.0 + (PR_ref  - 1.0) * scale_PR
+ *     eff_actual = eff_ref * scale_Eff
  *
  * EXTRAPOLATION:
- *   Nc%  outside map range        → silently clamped to nearest speed line
- *   DhT  outside speed line range → silently clamped to nearest point
- *
- * NO VSV SCHEDULE:
- *   Turbines do not use variable stator vanes in this model.
+ *   Nc  outside map range        → silently clamped to nearest speed line
+ *   DhT outside speed line range → silently clamped to nearest point
  *
  * FUTURE WORK (Phase 5):
  *   Turbine tip clearance control — efficiency correction factor
- *   as a function of power setting or Nc%.
+ *   as a function of power setting or Nc.
+ *
+ * REFERENCES:
+ *   Kurzke, J. and Riegler, C., ASME 2000-GT-0006. [Scaling method]
+ *   Walsh & Fletcher, "Gas Turbine Performance", Ch. 7-8. [Reference maps]
  *
  * UNITS:
- *   DhT  [-]   dimensionless energy function
- *   Nc   [%]   percent of design corrected speed
- *   PR   [-]   total pressure ratio
- *   eff  [-]   isentropic efficiency
+ *   DhT  [-]          dimensionless energy function
+ *   Nc   [RPM corrected]
+ *   PR   [-]          total pressure ratio
+ *   eff  [-]          isentropic efficiency
  *
  * NPSS ALIGNMENT:
  *   Mirrors NPSS TurbineMap element — data file driven,
- *   bilinear interpolation on (DhT, Nc%) axes.
+ *   bilinear interpolation on (DhT, Nc) axes.
  */
 
 // =========================================================================
@@ -52,8 +67,8 @@
 // =========================================================================
 
 struct TurbineMapResult {
-    double PR  = 1.0;   // pressure ratio [-]
-    double eff = 0.0;   // isentropic efficiency [-]
+    double PR  = 1.0;   // pressure ratio [-] — scaled to actual engine
+    double eff = 0.0;   // isentropic efficiency [-] — scaled to actual engine
 };
 
 // =========================================================================
@@ -67,33 +82,42 @@ public:
      * Constructor — loads and parses the map file.
      * Call isLoaded() after construction to verify success.
      *
-     * @param filepath  Path to the .map file
+     * @param filepath  Path to the .map file (TYPE must be TURBINE)
      */
     explicit TurbineMap(const std::string& filepath);
 
     /*
      * isLoaded — returns true if the map file was parsed successfully.
-     * Elements must check this before calling lookup().
      */
     bool isLoaded() const noexcept { return loaded_; }
 
     /*
      * lookup — returns PR and eff at the given operating point.
+     * Scale factors applied transparently — inputs and outputs are in
+     * actual engine units, not reference map units.
      *
-     * @param DhT     Dimensionless energy function [-]
-     *                DhT = Cp*(Tt_in - Tt_exit) / Tt_in
-     * @param Nc_pct  Corrected speed [% of design]
-     * @return        TurbineMapResult with PR and eff
+     * @param DhT  Dimensionless energy function [-]
+     *             DhT = Cp*(Tt_in - Tt_exit) / Tt_in
+     * @param Nc   Corrected speed [RPM corrected]
+     * @return     TurbineMapResult with scaled PR and eff
      */
-    TurbineMapResult lookup(double DhT, double Nc_pct) const;
+    TurbineMapResult lookup(double DhT, double Nc) const;
 
     /*
      * designPoint — returns the design point from the map file header.
-     * Used by elements to verify consistency with cycle design point.
      */
     const MapReader::MapDesignPoint& designPoint() const noexcept
     {
         return design_pt_;
+    }
+
+    /*
+     * scaleFactors — returns the Kurzke-Riegler scale factors.
+     * All 1.0 when no SCALE_* fields present in map file.
+     */
+    const MapReader::MapScaleFactors& scaleFactors() const noexcept
+    {
+        return scales_;
     }
 
 private:
@@ -102,9 +126,10 @@ private:
     // PRIVATE MEMBERS
     // =====================================================================
 
-    bool                                 loaded_     = false;   // true if map file parsed successfully
-    MapReader::MapDesignPoint            design_pt_;            // design point reference from file header
-    std::vector<MapReader::MapSpeedLine> speed_lines_;          // speed lines from SPEED_LINE blocks
+    bool                                  loaded_     = false;
+    MapReader::MapDesignPoint             design_pt_;           // design point from header
+    MapReader::MapScaleFactors            scales_;              // Kurzke-Riegler scale factors
+    std::vector<MapReader::MapSpeedLine>  speed_lines_;         // 2D map data
 
     // =====================================================================
     // PRIVATE METHODS
@@ -112,15 +137,16 @@ private:
 
     /*
      * interpolateSpeedLine — linear interpolation along one speed line.
-     * Returns (PR, eff) at the given DhT. Silently clamps if out of range.
+     * Operates in reference map space (before scale factors applied).
+     * Silently clamps to speed line bounds if DhT_ref out of range.
      *
-     * @param sl   Speed line to interpolate on
-     * @param DhT  Dimensionless energy function [-]
-     * @return     {PR, eff} pair
+     * @param sl       Speed line to interpolate on
+     * @param DhT_ref  Dimensionless energy function in reference space [-]
+     * @return         {PR_ref, eff_ref}
      */
     std::pair<double,double>
     interpolateSpeedLine(const MapReader::MapSpeedLine& sl,
-                         double                         DhT) const noexcept;
+                         double                         DhT_ref) const noexcept;
 };
 
 #endif // TURBINEMAP_H

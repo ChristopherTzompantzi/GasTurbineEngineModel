@@ -3,7 +3,6 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
-#include <algorithm>
 
 /*
  * MapReader.cpp
@@ -13,44 +12,46 @@
  * PARSE SEQUENCE:
  * 1. Open file — report error and return empty MapFileData if not found
  * 2. Read line by line — strip comments and blank lines
- * 3. Parse header fields — TYPE, NAME, NC_UNITS, SOURCE, DESIGN_PT
- * 4. Parse VSV_SCHEDULE block (COMPRESSOR only)
- * 5. Parse SPEED_LINE blocks (COMPRESSOR, TURBINE)
- * 6. Parse MAP_1D block (NOZZLE, INLET)
- * 7. Validate — check minimum point counts, required fields present
- * 8. Return populated MapFileData
+ * 3. Parse header fields — TYPE, NAME, NC_UNITS, SOURCE, SCALE_*, DESIGN_PT
+ * 4. Parse VSV_SCHEDULE / IGV_SCHEDULE block (COMPRESSOR/FAN only)
+ * 5. Parse SURGE_LINE block (COMPRESSOR/FAN only)
+ * 6. Parse SPEED_LINE blocks (COMPRESSOR, TURBINE)
+ * 7. Parse MAP_1D block (NOZZLE, INLET)
+ * 8. Validate — check minimum point counts, required fields present
+ * 9. Return populated MapFileData
  *
- * ERROR HANDLING:
- * All errors are reported to stderr with the filename and line number.
- * On error, read() returns a MapFileData with empty type field.
- * Callers check data.type.empty() to detect failure.
+ * SCALE FACTORS (Phase 5 — Kurzke-Riegler):
+ *   SCALE_PR, SCALE_EFF, SCALE_WC, SCALE_NC parsed from header.
+ *   All default to 1.0 if absent — backward compatible with Phase 3/4 maps.
+ *   Applied at lookup time in CompressorMap and TurbineMap, not here.
+ *
+ * IGV_SCHEDULE:
+ *   Treated identically to VSV_SCHEDULE — stored in vsv_schedule field.
+ *   Fan maps use IGV_SCHEDULE keyword; compressor maps use VSV_SCHEDULE.
+ *   Both populate the same data structure.
+ *
+ * SURGE_LINE:
+ *   Stores (Wc, PR_surge) pairs defining the surge boundary.
+ *   Parsed identically to MAP_1D but stored in surge_line field.
+ *   Scaled at lookup time by SCALE_WC and SCALE_PR in CompressorMap.
  */
 
 namespace MapReader {
 
 // =========================================================================
 // parseLine
-//
-// Splits a raw file line into whitespace-separated tokens.
-// Returns empty vector for:
-//   - Lines starting with # (comments)
-//   - Blank lines
-//   - Lines containing only whitespace
 // =========================================================================
 
 std::vector<std::string> parseLine(const std::string& line)
 {
     std::vector<std::string> tokens;
 
-    // Strip leading whitespace to check for comment or blank
     std::string trimmed = line;
     trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n"));
 
-    // Skip comments and blank lines
     if (trimmed.empty() || trimmed[0] == '#')
         return tokens;
 
-    // Split on whitespace
     std::istringstream iss(trimmed);
     std::string token;
     while (iss >> token)
@@ -61,11 +62,6 @@ std::vector<std::string> parseLine(const std::string& line)
 
 // =========================================================================
 // parseKeyValue
-//
-// Extracts a double from a "KEY=VALUE" token.
-// The key argument is used only for error reporting.
-//
-// Example: parseKeyValue("Wc=33.33", "Wc") returns 33.33
 // =========================================================================
 
 double parseKeyValue(const std::string& token, const std::string& key)
@@ -79,7 +75,6 @@ double parseKeyValue(const std::string& token, const std::string& key)
     }
     try {
         std::string val = token.substr(pos + 1);
-        // Strip leading whitespace — generated map files may have spaces after =
         val.erase(0, val.find_first_not_of(" \t"));
         return std::stod(val);
     }
@@ -92,22 +87,13 @@ double parseKeyValue(const std::string& token, const std::string& key)
 
 // =========================================================================
 // parseDesignPoint
-//
-// Parses the DESIGN_PT header line. Field interpretation depends on
-// map type:
-//
-//   COMPRESSOR: DESIGN_PT Wc=X  Nc=X  PR=X  eff=X
-//   TURBINE:    DESIGN_PT DhT=X Nc=X  PR=X  eff=X
-//   NOZZLE:     DESIGN_PT NPR=X Cfg=X
-//   INLET:      DESIGN_PT MN=X  eta_r=X
 // =========================================================================
 
 MapDesignPoint parseDesignPoint(const std::vector<std::string>& tokens,
-                                const std::string&             /*type*/)
+                                const std::string& /*type*/)
 {
     MapDesignPoint dp;
 
-    // tokens[0] = "DESIGN_PT", tokens[1..n] = key=value pairs
     for (std::size_t i = 1; i < tokens.size(); ++i)
     {
         const std::string& t = tokens[i];
@@ -116,8 +102,8 @@ MapDesignPoint parseDesignPoint(const std::vector<std::string>& tokens,
 
         const std::string key = t.substr(0, pos);
 
-        if      (key == "Wc"    || key == "DhT" ||
-                 key == "NPR"   || key == "MN")
+        if      (key == "Wc"  || key == "DhT" ||
+                 key == "NPR" || key == "MN")
             dp.x_design = parseKeyValue(t, key);
         else if (key == "Nc")
             dp.Nc        = parseKeyValue(t, key);
@@ -125,7 +111,7 @@ MapDesignPoint parseDesignPoint(const std::vector<std::string>& tokens,
             dp.PR        = parseKeyValue(t, key);
         else if (key == "eff")
             dp.eff       = parseKeyValue(t, key);
-        else if (key == "Cfg"   || key == "eta_r")
+        else if (key == "Cfg" || key == "eta_r")
             dp.y_design  = parseKeyValue(t, key);
     }
 
@@ -134,14 +120,6 @@ MapDesignPoint parseDesignPoint(const std::vector<std::string>& tokens,
 
 // =========================================================================
 // read
-//
-// Main entry point — parses a complete map file and returns MapFileData.
-//
-// Reads the file in a single pass. Maintains a simple state machine:
-//   STATE_HEADER      — reading header fields
-//   STATE_VSV         — inside VSV_SCHEDULE...END_VSV_SCHEDULE block
-//   STATE_SPEEDLINE   — inside SPEED_LINE...END_SPEED_LINE block
-//   STATE_MAP1D       — inside MAP_1D...END_MAP_1D block
 // =========================================================================
 
 MapFileData read(const std::string& filepath)
@@ -153,11 +131,17 @@ MapFileData read(const std::string& filepath)
     if (!file.is_open())
     {
         std::cerr << "[MapReader] ERROR: cannot open file '" << filepath << "'\n";
-        return data;   // data.type is empty — signals failure to caller
+        return data;
     }
 
-    // Parser state
-    enum State { STATE_HEADER, STATE_VSV, STATE_SPEEDLINE, STATE_MAP1D };
+    // Parser state machine
+    enum State {
+        STATE_HEADER,
+        STATE_VSV,
+        STATE_SURGELINE,
+        STATE_SPEEDLINE,
+        STATE_MAP1D
+    };
     State state = STATE_HEADER;
 
     MapSpeedLine current_speedline;
@@ -168,12 +152,12 @@ MapFileData read(const std::string& filepath)
     {
         ++line_num;
         const auto tokens = parseLine(raw_line);
-        if (tokens.empty()) continue;   // blank or comment
+        if (tokens.empty()) continue;
 
         const std::string& keyword = tokens[0];
 
         // ----------------------------------------------------------------
-        // State: HEADER — reading top-level header fields
+        // STATE_HEADER
         // ----------------------------------------------------------------
         if (state == STATE_HEADER)
         {
@@ -191,26 +175,51 @@ MapFileData read(const std::string& filepath)
             }
             else if (keyword == "SOURCE")
             {
-                // SOURCE may contain multiple words — join them
                 for (std::size_t i = 1; i < tokens.size(); ++i)
                 {
                     if (i > 1) data.source += " ";
                     data.source += tokens[i];
                 }
             }
+            // --- Phase 5: Kurzke-Riegler scale factors ---
+            else if (keyword == "SCALE_PR")
+            {
+                if (tokens.size() >= 2)
+                    data.scales.scale_PR = std::stod(tokens[1]);
+            }
+            else if (keyword == "SCALE_EFF")
+            {
+                if (tokens.size() >= 2)
+                    data.scales.scale_Eff = std::stod(tokens[1]);
+            }
+            else if (keyword == "SCALE_WC")
+            {
+                if (tokens.size() >= 2)
+                    data.scales.scale_Wc = std::stod(tokens[1]);
+            }
+            else if (keyword == "SCALE_NC")
+            {
+                if (tokens.size() >= 2)
+                    data.scales.scale_Nc = std::stod(tokens[1]);
+            }
+            // --- Design point ---
             else if (keyword == "DESIGN_PT")
             {
                 data.design_pt = parseDesignPoint(tokens, data.type);
             }
-            else if (keyword == "VSV_SCHEDULE")
+            // --- VSV_SCHEDULE (compressor) or IGV_SCHEDULE (fan — alias) ---
+            else if (keyword == "VSV_SCHEDULE" || keyword == "IGV_SCHEDULE")
             {
                 state = STATE_VSV;
             }
+            // --- SURGE_LINE block (compressor and fan) ---
+            else if (keyword == "SURGE_LINE")
+            {
+                state = STATE_SURGELINE;
+            }
             else if (keyword == "SPEED_LINE")
             {
-                // Begin a new speed line block
                 current_speedline = MapSpeedLine{};
-                // Parse Nc from "SPEED_LINE Nc=X"
                 if (tokens.size() >= 2)
                     current_speedline.Nc = parseKeyValue(tokens[1], "Nc");
                 state = STATE_SPEEDLINE;
@@ -228,11 +237,11 @@ MapFileData read(const std::string& filepath)
         }
 
         // ----------------------------------------------------------------
-        // State: VSV_SCHEDULE block
+        // STATE_VSV — VSV_SCHEDULE or IGV_SCHEDULE block
         // ----------------------------------------------------------------
         else if (state == STATE_VSV)
         {
-            if (keyword == "END_VSV_SCHEDULE")
+            if (keyword == "END_VSV_SCHEDULE" || keyword == "END_IGV_SCHEDULE")
             {
                 state = STATE_HEADER;
             }
@@ -241,97 +250,120 @@ MapFileData read(const std::string& filepath)
                 // Expect: Nc=X  angle=X
                 double Nc    = 0.0;
                 double angle = 0.0;
-                for (std::size_t i = 0; i < tokens.size(); ++i)
+                for (const auto& t : tokens)
                 {
-                    const auto pos = tokens[i].find('=');
+                    const auto pos = t.find('=');
                     if (pos == std::string::npos) continue;
-                    const std::string key = tokens[i].substr(0, pos);
-                    if      (key == "Nc")    Nc    = parseKeyValue(tokens[i], "Nc");
-                    else if (key == "angle") angle = parseKeyValue(tokens[i], "angle");
+                    const std::string key = t.substr(0, pos);
+                    if      (key == "Nc")    Nc    = parseKeyValue(t, "Nc");
+                    else if (key == "angle") angle = parseKeyValue(t, "angle");
                 }
                 data.vsv_schedule.push_back({Nc, angle});
             }
         }
 
         // ----------------------------------------------------------------
-        // State: SPEED_LINE block
+        // STATE_SURGELINE — SURGE_LINE block
+        // Stores (Wc, PR_surge) pairs defining the surge boundary.
+        // Surge line is stored unscaled — scaling applied at lookup time.
+        // ----------------------------------------------------------------
+        else if (state == STATE_SURGELINE)
+        {
+            if (keyword == "END_SURGE_LINE")
+            {
+                if (data.surge_line.size() < 2)
+                {
+                    std::cerr << "[MapReader] WARNING: SURGE_LINE has fewer"
+                              << " than 2 points in '" << filepath
+                              << "' — surge margin lookup will fail\n";
+                }
+                state = STATE_HEADER;
+            }
+            else
+            {
+                // Expect: Wc=X  PR=X
+                Map1DPoint pt;
+                for (const auto& t : tokens)
+                {
+                    const auto pos = t.find('=');
+                    if (pos == std::string::npos) continue;
+                    const std::string key = t.substr(0, pos);
+                    if      (key == "Wc") pt.x = parseKeyValue(t, "Wc");
+                    else if (key == "PR") pt.y = parseKeyValue(t, "PR");
+                }
+                data.surge_line.push_back(pt);
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // STATE_SPEEDLINE
         // ----------------------------------------------------------------
         else if (state == STATE_SPEEDLINE)
         {
             if (keyword == "END_SPEED_LINE")
             {
-                // Validate minimum points for interpolation
                 if (current_speedline.points.size() < 2)
                 {
                     std::cerr << "[MapReader] WARNING: SPEED_LINE Nc="
                               << current_speedline.Nc
-                              << " has fewer than 2 points — interpolation"
-                              << " will fail at line " << line_num
-                              << " in '" << filepath << "'\n";
+                              << " has fewer than 2 points at line "
+                              << line_num << " in '" << filepath << "'\n";
                 }
                 data.speed_lines.push_back(current_speedline);
                 state = STATE_HEADER;
             }
             else
             {
-                // Expect data points — format depends on map type:
-                //   COMPRESSOR: Wc=X  PR=X  eff=X
-                //   TURBINE:    DhT=X PR=X  eff=X
                 MapDataPoint pt;
-                for (std::size_t i = 0; i < tokens.size(); ++i)
+                for (const auto& t : tokens)
                 {
-                    const auto pos = tokens[i].find('=');
+                    const auto pos = t.find('=');
                     if (pos == std::string::npos) continue;
-                    const std::string key = tokens[i].substr(0, pos);
-                    if      (key == "Wc"  || key == "DhT")
-                        pt.x  = parseKeyValue(tokens[i], key);
+                    const std::string key = t.substr(0, pos);
+                    if      (key == "Wc" || key == "DhT")
+                        pt.x  = parseKeyValue(t, key);
                     else if (key == "PR")
-                        pt.y1 = parseKeyValue(tokens[i], key);
+                        pt.y1 = parseKeyValue(t, key);
                     else if (key == "eff")
-                        pt.y2 = parseKeyValue(tokens[i], key);
+                        pt.y2 = parseKeyValue(t, key);
                 }
                 current_speedline.points.push_back(pt);
             }
         }
 
         // ----------------------------------------------------------------
-        // State: MAP_1D block
+        // STATE_MAP1D
         // ----------------------------------------------------------------
         else if (state == STATE_MAP1D)
         {
             if (keyword == "END_MAP_1D")
             {
-                // Validate minimum points
                 if (data.map_1d.size() < 2)
                 {
                     std::cerr << "[MapReader] WARNING: MAP_1D has fewer"
-                              << " than 2 points in '" << filepath << "'"
-                              << " — interpolation will fail\n";
+                              << " than 2 points in '" << filepath << "'\n";
                 }
                 state = STATE_HEADER;
             }
             else
             {
-                // Expect: X=value Y=value
-                // NOZZLE: NPR=X Cfg=X
-                // INLET:  MN=X  eta_r=X
                 Map1DPoint pt;
-                for (std::size_t i = 0; i < tokens.size(); ++i)
+                for (const auto& t : tokens)
                 {
-                    const auto pos = tokens[i].find('=');
+                    const auto pos = t.find('=');
                     if (pos == std::string::npos) continue;
-                    const std::string key = tokens[i].substr(0, pos);
-                    if      (key == "NPR"   || key == "MN")
-                        pt.x = parseKeyValue(tokens[i], key);
-                    else if (key == "Cfg"   || key == "eta_r")
-                        pt.y = parseKeyValue(tokens[i], key);
+                    const std::string key = t.substr(0, pos);
+                    if      (key == "NPR" || key == "MN")
+                        pt.x = parseKeyValue(t, key);
+                    else if (key == "Cfg" || key == "eta_r")
+                        pt.y = parseKeyValue(t, key);
                 }
                 data.map_1d.push_back(pt);
             }
         }
     }
 
-    // Step 7 — Validate required header fields
+    // Step 8 — Validate required fields
     if (data.type.empty())
     {
         std::cerr << "[MapReader] ERROR: TYPE field missing in '"
@@ -346,27 +378,23 @@ MapFileData read(const std::string& filepath)
     if (data.nc_units.empty())
     {
         std::cerr << "[MapReader] WARNING: NC_UNITS field missing in '"
-                  << filepath << "' — defaulting to PERCENT\n";
-        data.nc_units = "PERCENT";
+                  << filepath << "' — defaulting to RPM\n";
+        data.nc_units = "RPM";
     }
 
-    // Validate 2D maps have at least 2 speed lines for interpolation
     if ((data.type == "COMPRESSOR" || data.type == "TURBINE") &&
         data.speed_lines.size() < 2)
     {
         std::cerr << "[MapReader] ERROR: " << data.type << " map '"
-                  << filepath << "' has fewer than 2 speed lines"
-                  << " — interpolation requires at least 2\n";
+                  << filepath << "' has fewer than 2 speed lines\n";
         return MapFileData{};
     }
 
-    // Validate 1D maps have at least 2 points
     if ((data.type == "NOZZLE" || data.type == "INLET") &&
         data.map_1d.size() < 2)
     {
         std::cerr << "[MapReader] ERROR: " << data.type << " map '"
-                  << filepath << "' has fewer than 2 points"
-                  << " — interpolation requires at least 2\n";
+                  << filepath << "' has fewer than 2 points\n";
         return MapFileData{};
     }
 

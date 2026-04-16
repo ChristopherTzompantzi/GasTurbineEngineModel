@@ -9,7 +9,26 @@ NAME        Fan
 NC_UNITS    RPM
 SOURCE      SYNTHETIC
 
+# Phase 5 — Kurzke-Riegler map scale factors
+# All 1.0 = no scaling active (synthetic map at design point)
+# Update from measured engine data for data reduction (Phase 6)
+SCALE_PR    1.000
+SCALE_EFF   1.000
+SCALE_WC    1.000
+SCALE_NC    1.000
+
 DESIGN_PT   Wc=60.000  Nc=8581.9  PR=3.500  eff=0.890
+
+# Surge line — synthetic, 12% above near-stall PR at each speed
+# Source: Mattingly App D topology, scaled to design point
+SURGE_LINE
+  Wc=30.240  PR=2.791
+  Wc=34.560  PR=3.261
+  Wc=38.880  PR=3.795
+  Wc=41.040  PR=4.085
+  Wc=43.200  PR=4.390
+  Wc=45.360  PR=4.712
+END_SURGE_LINE
 
 SPEED_LINE  Nc=6007.3
   Wc=30.240  PR=2.492  eff=0.600

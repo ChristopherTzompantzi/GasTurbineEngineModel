@@ -104,7 +104,18 @@ public:
 
     // Total enthalpy rise [J/kg] — available after compute()
     // dHt = Cp × (Tt_exit - Tt_inlet)
-    double dHt = 0.0;
+    double dHt          = 0.0;
+
+    // Corrected mass flow [kg/s] — available after compute()
+    double Wc           = 0.0;
+
+    // Corrected speed [RPM corrected] — available after compute()
+    double Nc           = 0.0;
+
+    // Surge margin [%] — available after compute() if map with surge line loaded
+    // SM = (PR_surge(Wc) - PR_operating) / PR_surge(Wc) * 100
+    // 0.0 if no surge line present in map file
+    double surge_margin = 0.0;
 
 private:
 

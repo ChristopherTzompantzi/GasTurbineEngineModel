@@ -9,6 +9,14 @@ NAME        TJ_HP_Compressor
 NC_UNITS    RPM
 SOURCE      SYNTHETIC
 
+# Phase 5 — Kurzke-Riegler map scale factors
+# All 1.0 = no scaling active (synthetic map at design point)
+# Update from measured engine data for data reduction (Phase 6)
+SCALE_PR    1.000
+SCALE_EFF   1.000
+SCALE_WC    1.000
+SCALE_NC    1.000
+
 DESIGN_PT   Wc=50.960  Nc=16091.0  PR=10.000  eff=0.870
 
 VSV_SCHEDULE
@@ -19,6 +27,17 @@ VSV_SCHEDULE
   Nc=16091.0  angle=+0.0
   Nc=16895.6  angle=+0.0
 END_VSV_SCHEDULE
+
+# Surge line — synthetic, 12% above near-stall PR at each speed
+# Source: Mattingly App D topology, scaled to design point
+SURGE_LINE
+  Wc=25.684  PR=6.405
+  Wc=29.353  PR=8.164
+  Wc=33.022  PR=10.208
+  Wc=34.857  PR=11.339
+  Wc=36.691  PR=12.544
+  Wc=38.526  PR=13.823
+END_SURGE_LINE
 
 SPEED_LINE  Nc=11263.7
   Wc=25.684  PR=5.719  eff=0.600
