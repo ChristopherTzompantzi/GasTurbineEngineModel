@@ -21,6 +21,7 @@
  *    otherwise uses fixed Cfg_ from constructor as fallback
  * 5. Determines choked or unchoked condition
  * 6. Computes jet velocity and cold gross thrust Fg_cold
+ * 7. Computes throat area — from scheduled Ath if set, else flow function
  *
  * THERMODYNAMIC EQUATIONS (real gas via Thermo):
  *   NPR      = Pt_inlet / Ps_ambient
@@ -30,14 +31,19 @@
  *   Vjet     = Cfg × sqrt(2 × Cp × Tt_inlet × (1 - (Ps_exit/Pt_inlet)^((γ-1)/γ)))
  *   Fg_cold  = W_bypass × Vjet + (Ps_exit - Ps_ambient) × Ath
  *
+ * VARIABLE AREA FAN NOZZLE (Phase 5.5):
+ *   Same two modes as core Nozzle:
+ *   Computed mode  (default):  Ath from flow function — design point use
+ *   Scheduled mode (setAth):   Ath fixed by operator — off-design use
+ *   Physical basis: fan nozzle area is scheduled against BPR and thrust
+ *   setting on high-bypass engines for noise and efficiency optimisation.
+ *
  * NPSS ALIGNMENT:
  *   loadMap() mirrors NPSS S_Cfg subelement pattern.
- *   Same NozzleMap class as core Nozzle — different map file.
+ *   setAth()  mirrors NPSS FanNozzle Ath as geometric input.
  *
  * FUTURE WORK:
- *   Variable area fan nozzle scheduling (Phase 5).
  *   Mixer option — bypass and core streams mixed before expansion.
- *   IGV support deferred to Phase 5.
  *
  * UNITS:
  *   NPR     [-]
@@ -52,22 +58,32 @@ public:
 
     /*
      * Constructor — sets altitude and fallback discharge coefficient.
-     * Call loadMap() after construction to enable map-based Cfg.
-     *
-     * @param altitude_m  Flight altitude [m]
-     * @param Cfg         Fallback discharge coefficient [-]
      */
     FanNozzle(double altitude_m, double Cfg = 0.98) noexcept;
 
     /*
      * loadMap — loads a NozzleMap from file.
      * Mirrors NPSS S_Cfg subelement pattern.
-     * Once loaded, compute() uses map lookup for Cfg.
-     * If load fails, falls back to fixed Cfg_ with a warning.
-     *
-     * @param filepath  Path to the .map file (TYPE must be NOZZLE)
      */
     void loadMap(const std::string& filepath);
+
+    /*
+     * setAth — sets a fixed throat area, switching to scheduled mode.
+     * Once called, compute() uses this Ath instead of the flow function.
+     * Call resetAth() to return to computed mode.
+     *
+     * @param Ath_m2  Throat area [m²]
+     */
+    void setAth(double Ath_m2) noexcept
+    {
+        ath_scheduled_     = Ath_m2;
+        use_scheduled_ath_ = true;
+    }
+
+    /*
+     * resetAth — returns to computed mode (Ath derived from flow function).
+     */
+    void resetAth() noexcept { use_scheduled_ath_ = false; }
 
     /*
      * compute — performs fan nozzle thermodynamics.
@@ -79,17 +95,15 @@ public:
     double Fg_cold = 0.0;   // Cold stream gross thrust [N]
     double Vjet    = 0.0;   // Actual bypass jet velocity [m/s]
     double NPR     = 0.0;   // Nozzle pressure ratio [-]
-    double Ath     = 0.0;   // Throat area [m²]
+    double Ath     = 0.0;   // Throat area [m²] — computed or scheduled
 
 private:
 
-    // =========================================================================
-    // PRIVATE MEMBERS
-    // =========================================================================
-
-    double                   altitude_m_;   // Flight altitude [m]
-    double                   Cfg_;          // Fallback discharge coefficient [-]
-    std::optional<NozzleMap> map_;          // NozzleMap subelement — present only if loadMap() called
+    double                   altitude_m_;
+    double                   Cfg_;
+    std::optional<NozzleMap> map_;
+    double                   ath_scheduled_     = 0.0;
+    bool                     use_scheduled_ath_ = false;
 };
 
 #endif // FANNOZZLE_H

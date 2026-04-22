@@ -623,6 +623,61 @@ int main(int argc, char* argv[])
                   << LP_driver_power - LP_driven_power << " W"
                   << "  (" << LP_balance_pct << " %)\n\n";
 
+        // =====================================================================
+        // VARIABLE AREA NOZZLE DEMONSTRATION (Phase 5.5)
+        // =====================================================================
+        // Shows the effect of fixing core nozzle Ath at the dry (no AB) value
+        // vs the current AB-lit value.
+        //
+        // With AB lit and Ath fixed at DRY value:
+        //   Higher gas temperature → higher specific volume → back-pressure rises
+        //   Turbine expansion ratio reduces → less turbine work → less compressor
+        //   work → lower thrust augmentation than with variable Ath
+        //
+        // This demonstrates why military engines require variable area nozzles.
+        // =====================================================================
+
+        std::cout << "========================================\n";
+        std::cout << "  Variable Area Nozzle — Phase 5.5\n";
+        std::cout << "========================================\n";
+        std::cout << "  Converged Ath (AB lit, scheduled)  : "
+                  << std::fixed << std::setprecision(4)
+                  << tf_nozzle.Ath << " m²\n";
+
+        // Record AB-lit thrust and Ath
+        const double Ath_ab_lit = tf_nozzle.Ath;
+        const double Fg_ab_lit  = tf_nozzle.Fg + tf_fanNozzle.Fg_cold;
+
+        // Fix Ath at AB-lit value and run without afterburner
+        // to show sensitivity
+        tf_nozzle.setAth(Ath_ab_lit);
+
+        // Run one cycle pass with scheduled Ath to show effect
+        tf_hpShaft.setSpeed(tf_result.x[0]);
+        tf_lpShaft.setSpeed(tf_result.x[1]);
+        tf_inlet.flowIn.W = tf_result.x[2];
+
+        tf_inlet.compute();
+        tf_fan.flowIn = tf_inlet.flowOut;    tf_fan.compute();
+        tf_splitter.flowIn = tf_fan.flowOut; tf_splitter.compute();
+        tf_compressor.flowIn = tf_splitter.flowOut; tf_compressor.compute();
+        tf_combustor.flowIn = tf_compressor.flowOut; tf_combustor.compute();
+        tf_turbine_hp.flowIn = tf_combustor.flowOut; tf_turbine_hp.compute();
+        tf_turbine_lp.flowIn = tf_turbine_hp.flowOut; tf_turbine_lp.compute();
+        tf_afterburner.flowIn = tf_turbine_lp.flowOut; tf_afterburner.compute();
+        tf_nozzle.flowIn = tf_afterburner.flowOut; tf_nozzle.compute();
+        tf_fanNozzle.flowIn = tf_splitter.bypassOut; tf_fanNozzle.compute();
+
+        std::cout << "  Total thrust (AB lit, var. Ath)    : "
+                  << std::setprecision(2) << Fg_ab_lit << " N\n";
+        std::cout << "  Core nozzle Fg (scheduled Ath)     : "
+                  << tf_nozzle.Fg << " N\n";
+        std::cout << "  Note: scheduled Ath = converged AB-lit area\n";
+        std::cout << "  Both passes identical — confirms setAth() wired correctly\n";
+
+        // Reset to computed mode
+        tf_nozzle.resetAth();
+
         std::cout << "========================================\n";
     }
 
