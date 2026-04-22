@@ -16,13 +16,20 @@
  * 5. Get Cfg — from map if loaded, else fixed fallback value
  * 6. Compute ideal jet velocity (isentropic expansion)
  * 7. Apply Cfg to get actual jet velocity
- * 8. Calculate throat area from flow function
+ * 8. Determine throat area:
+ *    Scheduled mode (setAth called): Ath = ath_scheduled_
+ *    Computed mode  (default):       Ath from flow function
  * 9. Compute gross thrust Fg
  * 10. Write results to flowOut
  *
- * CFG SOURCE:
- *   Map loaded    → NozzleMap::lookup(NPR)
- *   No map loaded → fixed Cfg_ from constructor
+ * VARIABLE AREA NOZZLE:
+ *   Scheduled mode: Ath is fixed hardware — cycle must balance with it.
+ *   Computed mode:  Ath sizes itself to current flow (design point use).
+ *
+ * THROAT AREA — COMPUTED MODE:
+ *   At choked conditions: MN_throat = 1.0
+ *   FF  = sqrt(γ/R) × MN × (1 + (γ-1)/2 × MN²)^(-(γ+1)/(2(γ-1)))
+ *   Ath = W × sqrt(Tt) / (Pt × FF)
  */
 
 // =========================================================================
@@ -36,10 +43,6 @@ Nozzle::Nozzle(double altitude_m, double Cfg) noexcept
 
 // =========================================================================
 // loadMap
-//
-// Loads a NozzleMap from file. Mirrors NPSS S_Cfg subelement pattern.
-// On success: compute() uses map lookup for Cfg.
-// On failure: falls back to fixed Cfg_ with a warning.
 // =========================================================================
 
 void Nozzle::loadMap(const std::string& filepath)
@@ -56,8 +59,6 @@ void Nozzle::loadMap(const std::string& filepath)
 
 // =========================================================================
 // compute
-//
-// Performs nozzle thermodynamics. Called once per solver iteration.
 // =========================================================================
 
 void Nozzle::compute() noexcept
@@ -70,21 +71,16 @@ void Nozzle::compute() noexcept
     // Step 2 — Real gas properties at inlet conditions
     const double gamma = Thermo::getGamma(Tt_in, flowIn.FAR);
     const double Cp    = Thermo::getCp   (Tt_in, flowIn.FAR);
-    const double R     = Cp * (gamma - 1.0) / gamma;   // [J/kg·K]
+    const double R     = Cp * (gamma - 1.0) / gamma;
 
     // Step 3 — Ambient static pressure from ISA
     const double Ps_amb = ISA::getStaticPressure(altitude_m_);
 
     // Step 4 — NPR and critical NPR
-    // NPR_crit = ((γ+1)/2)^(γ/(γ-1))
     NPR = Pt_in / Ps_amb;
     const double NPR_crit = std::pow((gamma + 1.0) / 2.0,
                                       gamma / (gamma - 1.0));
-
-    // Determine exit static pressure
-    // Unchoked: Ps_exit = Ps_ambient
-    // Choked:   Ps_exit = Pt_inlet / NPR_crit
-    const double Ps_exit = (NPR < NPR_crit) ? Ps_amb : Pt_in / NPR_crit;
+    const double Ps_exit  = (NPR < NPR_crit) ? Ps_amb : Pt_in / NPR_crit;
 
     // Step 5 — Get Cfg from map or fallback
     const double Cfg = map_.has_value() ? map_->lookup(NPR) : Cfg_;
@@ -99,26 +95,36 @@ void Nozzle::compute() noexcept
     // Step 7 — Actual jet velocity
     Vjet = Cfg * Vjet_ideal;
 
-    // Step 8 — Throat area from flow function
-    // At choked conditions MN_throat = 1.0
-    const double MN_throat = (NPR >= NPR_crit)
-                           ? 1.0
-                           : Vjet / std::sqrt(gamma * R * Tt_in);
-    const double FF_exp = -(gamma + 1.0) / (2.0 * (gamma - 1.0));
-    const double FF     = std::sqrt(gamma / R) * MN_throat
-                        * std::pow(1.0 + (gamma - 1.0) / 2.0
-                                       * MN_throat * MN_throat, FF_exp);
-    Ath = (W * std::sqrt(Tt_in)) / (Pt_in * FF);
+    // Step 8 — Throat area
+    // Scheduled mode: use fixed Ath set by operator via setAth()
+    // Computed mode:  derive from continuity + flow function
+    if (use_scheduled_ath_)
+    {
+        // Scheduled mode — Ath is a fixed geometric constraint
+        Ath = ath_scheduled_;
+    }
+    else
+    {
+        // Computed mode — Ath sizes itself to current flow
+        const double MN_throat = (NPR >= NPR_crit)
+                               ? 1.0
+                               : Vjet / std::sqrt(gamma * R * Tt_in);
+        const double FF_exp = -(gamma + 1.0) / (2.0 * (gamma - 1.0));
+        const double FF     = std::sqrt(gamma / R) * MN_throat
+                            * std::pow(1.0 + (gamma - 1.0) / 2.0
+                                           * MN_throat * MN_throat, FF_exp);
+        Ath = (W * std::sqrt(Tt_in)) / (Pt_in * FF);
+    }
 
     // Step 9 — Gross thrust
-    // Fg = W × Vjet + (Ps_exit - Ps_amb) × Ath
     Fg = W * Vjet + (Ps_exit - Ps_amb) * Ath;
 
     // Step 10 — Update flowOut
     flowOut.Pt    = Pt_in;
     flowOut.Tt    = Tt_in;
     flowOut.W     = W;
-    flowOut.MN    = MN_throat;
+    flowOut.MN    = (NPR >= NPR_crit) ? 1.0
+                  : Vjet / std::sqrt(gamma * R * Tt_in);
     flowOut.FAR   = flowIn.FAR;
     flowOut.Cp    = Thermo::getCp   (flowOut.Tt, flowOut.FAR);
     flowOut.gamma = Thermo::getGamma(flowOut.Tt, flowOut.FAR);
