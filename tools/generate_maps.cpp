@@ -394,6 +394,96 @@ static void generateTurbineMap(const std::string& filepath,
 }
 
 // =========================================================================
+// generateCombustorMap
+//
+// Generates a combustor performance map with two 1D tables:
+//   EFF_B_TABLE: eff_b vs FAR — combustion efficiency
+//   DPQP_TABLE:  dPqP vs Wc_in — pressure loss
+//
+// EFF_B shape (Walsh & Fletcher Ch.6, Lefebvre & Ballal Ch.4):
+//   Peak eff_b near FAR=0.025 (well within stability range for gas turbines)
+//   Drops slightly at very low FAR (lean blowout approach)
+//   Drops slightly at high FAR (rich, incomplete combustion)
+//   Range: 0.970 – 0.9995
+//
+// DPQP shape:
+//   Increases linearly with corrected inlet flow (dynamic pressure effect)
+//   Range: 0.030 – 0.055 over typical Wc range
+// =========================================================================
+
+static void generateCombustorMap(const std::string& filepath,
+                                  const std::string& name,
+                                  double             FAR_design,
+                                  double             eff_b_design,
+                                  double             dPqP_design,
+                                  double             Wc_design)
+{
+    std::ofstream f(filepath);
+    if (!f.is_open())
+    {
+        std::cerr << "[generate_maps] ERROR: cannot open '" << filepath << "'\n";
+        return;
+    }
+
+    f << FILE_HEADER;
+    f << "TYPE        COMBUSTOR\n";
+    f << "NAME        " << name << "\n";
+    f << "SOURCE      SYNTHETIC\n";
+    f << "# Reference: Walsh & Fletcher Ch.6, Lefebvre & Ballal Ch.4\n";
+    f << "\n";
+
+    f << std::fixed << std::setprecision(4);
+
+    // --- EFF_B_TABLE: eff_b vs FAR ---
+    // Shape: peak at FAR_design, drops at lean and rich extremes
+    // Physical basis: poor atomisation at very low FAR, incomplete
+    // combustion at very high FAR
+    f << "# eff_b vs FAR — combustion efficiency\n";
+    f << "# Peak at design FAR, drops at lean and rich extremes\n";
+    f << "EFF_B_TABLE\n";
+
+    const std::vector<std::pair<double,double>> eff_b_pts = {
+        {0.005,  0.970},   // very lean — approaching stability limit
+        {0.010,  0.985},   // lean
+        {0.015,  0.992},   // part power
+        {0.020,  0.997},   // approach design
+        {FAR_design, eff_b_design},   // design point
+        {0.035,  0.998},   // slightly rich
+        {0.045,  0.995},   // rich
+        {0.060,  0.985},   // very rich
+        {0.080,  0.970},   // approaching rich blowout
+    };
+
+    for (const auto& pt : eff_b_pts)
+        f << "  FAR=" << pt.first << "  eff_b=" << pt.second << "\n";
+
+    f << "END_EFF_B_TABLE\n\n";
+
+    // --- DPQP_TABLE: dPqP vs Wc_in ---
+    // Shape: increases with corrected inlet flow (dynamic pressure scaling)
+    // Anchored at design dPqP at design Wc
+    f << "# dPqP vs Wc_in [kg/s corrected] — fractional pressure loss\n";
+    f << "# Increases with corrected inlet flow (dynamic pressure effect)\n";
+    f << "DPQP_TABLE\n";
+
+    // Generate 5 points spanning 60% to 120% of design Wc
+    for (int k = 0; k < 5; ++k)
+    {
+        const double frac  = 0.60 + k * 0.15;   // 0.60, 0.75, 0.90, 1.05, 1.20
+        const double Wc    = Wc_design * frac;
+        // dPqP scales with dynamic pressure ∝ Wc² — linear approx over small range
+        const double dPqP  = dPqP_design * (0.80 + 0.20 * frac / 1.0);
+        f << "  Wc=" << std::setprecision(2) << Wc
+          << "  dPqP=" << std::setprecision(4) << dPqP << "\n";
+    }
+
+    f << "END_DPQP_TABLE\n";
+
+    f.close();
+    std::cout << "  Written: " << filepath << "\n";
+}
+
+// =========================================================================
 // generateNozzleMap — unchanged
 // =========================================================================
 
@@ -535,6 +625,20 @@ int main()
     generateTurbineMap(
         OUT_DIR + "turbojet_hp_turbine.map", "TJ_HP_Turbine",
         2.246, 0.89, 1400.0, 1199.66, Nc_HP_DESIGN
+    );
+
+    // Turbofan combustor map
+    // Design: FAR=0.027, eff_b=0.999, dPqP=0.04, Wc_in=33.33 kg/s
+    generateCombustorMap(
+        OUT_DIR + "combustor.map", "TF_Combustor",
+        0.027, 0.999, 0.04, 33.33
+    );
+
+    // Turbojet combustor map
+    // Design: FAR=0.022, eff_b=0.999, dPqP=0.04, Wc_in=20.0 kg/s
+    generateCombustorMap(
+        OUT_DIR + "turbojet_combustor.map", "TJ_Combustor",
+        0.022, 0.999, 0.04, 20.0
     );
 
     // Core nozzle — restored (was missing from previous main())

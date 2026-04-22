@@ -158,8 +158,9 @@ int main(int argc, char* argv[])
 
         // Load performance maps — NPSS S_map subelement pattern
         inlet.loadMap     (MAP_DIR + "inlet.map");
-        compressor.loadMap(MAP_DIR + "hp_compressor.map");
-        turbine.loadMap   (MAP_DIR + "hp_turbine.map");
+        compressor.loadMap(MAP_DIR + "turbojet_compressor.map");
+        combustor.loadMap (MAP_DIR + "turbojet_combustor.map");
+        turbine.loadMap   (MAP_DIR + "turbojet_hp_turbine.map");
         nozzle.loadMap    (MAP_DIR + "nozzle.map");
 
         // HP shaft — design speed 15,000 RPM physical
@@ -286,6 +287,11 @@ int main(int argc, char* argv[])
                   << turbine.eta_poly     << "\n";
         std::cout << "  Turbine    clearance    : "
                   << std::setprecision(3) << 0.5 << " %\n";
+        std::cout << std::setprecision(4);
+        std::cout << "  Combustor  eff_b        : "
+                  << combustor.eff_b_out << "\n";
+        std::cout << "  Combustor  dPqP         : "
+                  << combustor.dPqP_out  << "\n";
         std::cout << "========================================\n";
     }
 
@@ -358,6 +364,7 @@ int main(int argc, char* argv[])
         tf_inlet.loadMap      (MAP_DIR + "inlet.map");
         tf_fan.loadMap        (MAP_DIR + "fan.map");
         tf_compressor.loadMap (MAP_DIR + "hp_compressor.map");
+        tf_combustor.loadMap  (MAP_DIR + "combustor.map");
         tf_turbine_hp.loadMap (MAP_DIR + "hp_turbine.map");
         tf_turbine_lp.loadMap (MAP_DIR + "lp_turbine.map");
         tf_nozzle.loadMap     (MAP_DIR + "nozzle.map");
@@ -591,7 +598,12 @@ int main(int argc, char* argv[])
         std::cout << "  LP Turbine eta_poly        : "
                   << tf_turbine_lp.eta_poly << "\n";
         std::cout << "  LP Turbine clearance       : "
-                  << std::setprecision(3) << 0.3 << " %\n\n";
+                  << std::setprecision(3) << 0.3 << " %\n";
+        std::cout << std::setprecision(4);
+        std::cout << "  Combustor  eff_b           : "
+                  << tf_combustor.eff_b_out << "\n";
+        std::cout << "  Combustor  dPqP            : "
+                  << tf_combustor.dPqP_out  << "\n\n";
 
         // LP shaft — manual power balance (mixed mass flow bases)
         // Physical power [W] = specific work [J/kg] × mass flow [kg/s]

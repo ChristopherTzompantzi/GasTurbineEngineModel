@@ -15,6 +15,7 @@ set(SOURCES
     src/maps/TurbineMap.cpp
     src/maps/NozzleMap.cpp
     src/maps/InletMap.cpp
+    src/maps/CombustorMap.cpp
     src/elements/Inlet.cpp
     src/elements/Fan.cpp
     src/elements/Splitter.cpp
@@ -65,6 +66,7 @@ add_executable(test_maps
     src/maps/TurbineMap.cpp
     src/maps/NozzleMap.cpp
     src/maps/InletMap.cpp
+    src/maps/CombustorMap.cpp
     src/thermodynamics/Thermo.cpp
 )
 target_include_directories(test_maps PRIVATE include)
