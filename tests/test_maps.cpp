@@ -8,6 +8,7 @@
 #include "TurbineMap.h"
 #include "NozzleMap.h"
 #include "InletMap.h"
+#include "CombustorMap.h"
 
 /*
  * test_maps.cpp
@@ -31,7 +32,8 @@
  *   TC6 — Extrapolation clamping below and above map range
  *   TC7 — VSV schedule interpolation at part speed
  *   TC8 — Surge line lookup and surge margin
- *   TC9 — IGV schedule interpolation on fan map
+ *   TC9  — IGV schedule interpolation on fan map
+ *   TC10 — CombustorMap eff_b and dPqP lookup
  *
  * PASS/FAIL CRITERIA:
  *   All tolerances are documented inline and account for the fact
@@ -639,6 +641,61 @@ void runTC9()
 }
 
 // =========================================================================
+// TC10 — CombustorMap lookup
+// =========================================================================
+/*
+ * OBJECTIVE:
+ *   Verify CombustorMap::lookup() returns eff_b and dPqP within
+ *   physically correct ranges at the design FAR and Wc.
+ *
+ *   REQUIREMENT: eff_b at design FAR > 0.99
+ *   REQUIREMENT: eff_b at very lean FAR < eff_b at design FAR
+ *   REQUIREMENT: dPqP at design Wc within [0.03, 0.06]
+ *   REQUIREMENT: dPqP at high Wc > dPqP at low Wc
+ */
+void runTC10()
+{
+    printCaseHeader(10, "CombustorMap eff_b and dPqP lookup");
+
+    // --- INPUTS ---
+    constexpr double FAR_design  = 0.027;    // turbofan design FAR
+    constexpr double FAR_lean    = 0.010;    // lean — lower eff_b expected
+    constexpr double Wc_design   = 33.33;    // turbofan design Wc_in [kg/s]
+    constexpr double Wc_high     = 40.00;    // above design — higher dPqP expected
+    constexpr double Wc_low      = 20.00;    // below design — lower dPqP expected
+
+    // --- ACTIONS ---
+    CombustorMap cmap(MAP_DIR + "combustor.map");
+
+    if (!cmap.isLoaded()) {
+        std::cerr << "  [FAIL] combustor.map — map not loaded\n";
+        ++g_tests_run; ++g_tests_failed;
+        return;
+    }
+
+    const CombustorMapResult res_design = cmap.lookup(FAR_design, Wc_design);
+    const CombustorMapResult res_lean   = cmap.lookup(FAR_lean,   Wc_design);
+    const CombustorMapResult res_high   = cmap.lookup(FAR_design, Wc_high);
+    const CombustorMapResult res_low    = cmap.lookup(FAR_design, Wc_low);
+
+    // --- EXPECTED RESULTS ---
+    reportCheck("eff_b at design FAR > 0.99",
+                res_design.eff_b > 0.99, res_design.eff_b, "> 0.99");
+
+    reportCheck("eff_b lean < eff_b design",
+                res_lean.eff_b < res_design.eff_b, res_lean.eff_b,
+                "< " + std::to_string(res_design.eff_b));
+
+    reportCheck("dPqP at design Wc in [0.03, 0.06]",
+                res_design.dPqP >= 0.03 && res_design.dPqP <= 0.06,
+                res_design.dPqP, "in [0.03, 0.06]");
+
+    reportCheck("dPqP high Wc > dPqP low Wc",
+                res_high.dPqP > res_low.dPqP, res_high.dPqP,
+                "> " + std::to_string(res_low.dPqP));
+}
+
+// =========================================================================
 // MAIN
 // =========================================================================
 
@@ -659,6 +716,7 @@ int main()
     runTC7();
     runTC8();
     runTC9();
+    runTC10();
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: "
