@@ -12,10 +12,10 @@ SOURCE      SYNTHETIC
 # Phase 5 — Kurzke-Riegler map scale factors
 # All 1.0 = no scaling active (synthetic map at design point)
 # Update from measured engine data for data reduction (Phase 6)
-SCALE_PR    1.000
-SCALE_EFF   1.000
-SCALE_WC    1.000
-SCALE_NC    1.000
+SCALE_PR    1.000000
+SCALE_EFF   1.000000
+SCALE_WC    1.000000
+SCALE_NC    1.000000
 
 DESIGN_PT   Wc=33.330  Nc=16091.0  PR=8.000  eff=0.870
 

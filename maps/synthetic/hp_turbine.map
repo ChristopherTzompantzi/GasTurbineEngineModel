@@ -12,10 +12,10 @@ SOURCE      SYNTHETIC
 # Phase 5 — Kurzke-Riegler map scale factors
 # All 1.0 = no scaling active (synthetic map at design point)
 # Update from measured engine data for data reduction (Phase 6)
-SCALE_PR    1.000
-SCALE_EFF   1.000
-SCALE_WC    1.000
-SCALE_NC    1.000
+SCALE_PR    0.972264
+SCALE_EFF   1.003615
+SCALE_WC    1.000000
+SCALE_NC    1.000000
 
 # DhT = Cp*(Tt_in - Tt_exit)/Tt_in [-]
 # NOTE: DhT [-] is NOT the same as dHt [J/kg] in Turbine.cpp
