@@ -89,3 +89,36 @@ target_compile_options(generate_maps PRIVATE
     -Wextra     # Enable extra warnings
     -Wpedantic  # Enforce strict ISO C++ compliance
 )
+
+# data_reduction — Phase 6 data reduction model
+# Runs turbofan cycle at multiple power settings, computes Kurzke-Riegler
+# scale factors per component, writes updated scale factors to map files.
+# Replace synthetic operating points with real test cell data when available.
+add_executable(data_reduction
+    tools/data_reduction.cpp
+    src/thermodynamics/ISA.cpp
+    src/thermodynamics/Thermo.cpp
+    src/maps/MapReader.cpp
+    src/maps/CompressorMap.cpp
+    src/maps/TurbineMap.cpp
+    src/maps/NozzleMap.cpp
+    src/maps/InletMap.cpp
+    src/maps/CombustorMap.cpp
+    src/elements/Inlet.cpp
+    src/elements/Fan.cpp
+    src/elements/Splitter.cpp
+    src/elements/Compressor.cpp
+    src/elements/Combustor.cpp
+    src/elements/Turbine.cpp
+    src/elements/Nozzle.cpp
+    src/elements/FanNozzle.cpp
+    src/elements/Afterburner.cpp
+    src/mechanics/Shaft.cpp
+    src/solver/Solver.cpp
+)
+target_include_directories(data_reduction PRIVATE include)
+target_compile_options(data_reduction PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
